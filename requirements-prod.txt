@@ -1,0 +1,14 @@
+# Production-only dependencies for the Habio backend.
+# Slim subset of requirements.txt — excludes dev tools (black, isort, mypy,
+# pytest, flake8) and unused libs (pandas, numpy, boto3, etc.) so the
+# Docker image stays small and builds without the Emergent private index.
+fastapi==0.110.1
+uvicorn[standard]==0.25.0
+python-dotenv>=1.0.1
+pydantic>=2.6.4
+email-validator>=2.2.0
+motor==3.3.1
+pymongo==4.5.0
+bcrypt==4.1.3
+pyjwt>=2.10.1
+python-multipart>=0.0.9

@@ -1053,14 +1053,14 @@ async def api_health():
 
 app.include_router(api_router)
 
-app.add_middleware(
+aapp.add_middleware(
     CORSMiddleware,
-    allow_credentials=True,
     allow_origins=[
-        origin.strip()
-        for origin in os.environ.get("CORS_ORIGINS", "*").split(",")
-        if origin.strip()
+        "http://localhost:3000",
+        "https://habioapp.co",
+        "https://www.habioapp.co",
     ],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )

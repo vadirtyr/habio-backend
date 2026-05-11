@@ -1053,7 +1053,7 @@ async def api_health():
 
 app.include_router(api_router)
 
-aapp.add_middleware(
+app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",

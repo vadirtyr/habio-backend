@@ -261,6 +261,31 @@ async def logout(response: Response):
     return {"ok": True}
 
 
+@api_router.delete("/auth/me")
+async def delete_account(
+    response: Response,
+    user: dict = Depends(get_current_user),
+):
+    uid = user["id"]
+
+    await db.habits.delete_many({"user_id": uid})
+    await db.tasks.delete_many({"user_id": uid})
+    await db.rewards.delete_many({"user_id": uid})
+    await db.redemptions.delete_many({"user_id": uid})
+    await db.transactions.delete_many({"user_id": uid})
+    await db.user_achievements.delete_many({"user_id": uid})
+    await db.quest_claims.delete_many({"user_id": uid})
+
+    await db.users.delete_one({"id": uid})
+
+    response.delete_cookie("access_token", path="/")
+
+    return {
+        "ok": True,
+        "message": "Account deleted successfully",
+    }
+
+
 @api_router.get("/auth/me")
 async def me(user: dict = Depends(get_current_user)):
     return clean_user(user)
@@ -343,7 +368,6 @@ async def delete_habit(habit_id: str, user: dict = Depends(get_current_user)):
     return {"ok": True}
 
 
-@api_router.post("/habits/{habit_id}/complete")
 @api_router.post("/habits/{habit_id}/complete")
 async def complete_habit(habit_id: str, user: dict = Depends(get_current_user)):
     habit = await db.habits.find_one(
@@ -1059,6 +1083,7 @@ app.add_middleware(
         "http://localhost:3000",
         "https://habioapp.co",
         "https://www.habioapp.co",
+        "https://main.dsrkbok7uhqk.amplifyapp.com",
     ],
     allow_credentials=True,
     allow_methods=["*"],

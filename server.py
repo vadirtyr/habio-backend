@@ -29,15 +29,15 @@ THEME_STORE = {
     "dark": {"id": "dark", "name": "Dark", "price": 0, "type": "included"},
     "nature": {"id": "nature", "name": "Nature", "price": 0, "type": "included"},
     "focus": {"id": "focus", "name": "Focus", "price": 0, "type": "included"},
-    "sunset": {"id": "sunset", "name": "Sunset", "price": 500, "type": "store"},
+    "sunsetStore": {"id": "sunsetStore", "name": "Sunset", "price": 500, "type": "store"},
     "ocean": {"id": "ocean", "name": "Ocean", "price": 750, "type": "store"},
     "coffee": {"id": "coffee", "name": "Coffee Shop", "price": 1000, "type": "store"},
-    "forestNight": {"id": "Forest Night","type": "achievement","price": 0,"unlockAchievement": "streak-7",},
-    "aurora": {"id": "Aurora", "type": "achievement", "price": 0, "unlockAchievement": "coins-500"},
-    "sunset": {"id": "Sunset", "type": "achievement", "price": 0, "unlockAchievement": "tasks-50"},
-    "midnightGold": {"id": "Midnight Gold", "type": "achievement", "price": 0, "unlockAchievement": "streak-30"},
-    "oceanBreeze": {"id": "Ocean Breeze", "type": "achievement", "price": 0, "unlockAchievement": "habits-25"},
-    "roseGarden": {"id": "Rose Garden", "type": "achievement", "price": 0, "unlockAchievement": "quests-10"},
+    "forestNight": {"id": "forestNight", "name": "Forest Night", "type": "achievement", "price": 0, "unlockAchievement": "streak-7"},
+    "aurora": {"id": "aurora", "name": "Aurora", "type": "achievement", "price": 0, "unlockAchievement": "coins-500"},
+    "sunset": {"id": "sunset", "name": "Sunset", "type": "achievement", "price": 0, "unlockAchievement": "tasks-50"},
+    "midnightGold": {"id": "midnightGold", "name": "Midnight Gold", "type": "achievement", "price": 0, "unlockAchievement": "streak-30"},
+    "oceanBreeze": {"id": "oceanBreeze", "name": "Ocean Breeze", "type": "achievement", "price": 0, "unlockAchievement": "habits-25"},
+    "roseGarden": {"id": "roseGarden", "name": "Rose Garden", "type": "achievement", "price": 0, "unlockAchievement": "quests-10"},
 }
 
 DEFAULT_THEMES = ["light", "dark", "nature", "focus"]
@@ -356,6 +356,8 @@ async def create_habit(body: HabitIn, user: dict = Depends(get_current_user)):
     doc.pop("_id", None)
     doc["completed_today"] = False
 
+    await sync_user_achievements(user["id"])
+
     return doc
 
 
@@ -470,6 +472,8 @@ async def complete_habit(habit_id: str, user: dict = Depends(get_current_user)):
 
     await log_transaction(user["id"], coins, "earn", "habit", habit_id, desc)
 
+    newly_earned = await sync_user_achievements(user["id"])
+
     updated = await db.habits.find_one({"id": habit_id}, {"_id": 0})
     updated["completed_today"] = True
 
@@ -480,6 +484,7 @@ async def complete_habit(habit_id: str, user: dict = Depends(get_current_user)):
         "streak_bonus": bonus,
         "new_balance": new_balance,
         "streak": new_streak,
+        "new_achievements": newly_earned,
     }
 
 
@@ -514,6 +519,8 @@ async def create_task(body: TaskIn, user: dict = Depends(get_current_user)):
 
     await db.tasks.insert_one(doc)
     doc.pop("_id", None)
+
+    await sync_user_achievements(user["id"])
 
     return doc
 
@@ -613,10 +620,13 @@ async def complete_task(task_id: str, user: dict = Depends(get_current_user)):
             "created_at": now_utc_iso(),
         })
 
+    newly_earned = await sync_user_achievements(user["id"])
+
     return {
         "coins_earned": coins,
         "new_balance": new_balance,
         "next_task_id": next_task_id,
+        "new_achievements": newly_earned,
     }
 
 
@@ -773,7 +783,13 @@ async def redeem_reward(reward_id: str, user: dict = Depends(get_current_user)):
         f"Redeemed: {reward['name']}",
     )
 
-    return {"redemption": redemption, "new_balance": new_balance}
+    newly_earned = await sync_user_achievements(user["id"])
+
+    return {
+        "redemption": redemption,
+        "new_balance": new_balance,
+        "new_achievements": newly_earned,
+    }
 
 
 @api_router.get("/redemptions")
@@ -795,40 +811,23 @@ async def list_transactions(user: dict = Depends(get_current_user)):
 @api_router.get("/stats")
 async def get_stats(user: dict = Depends(get_current_user)):
     uid = user["id"]
+    metrics = await compute_user_metrics(uid)
 
-    habits_count = await db.habits.count_documents({"user_id": uid})
-    tasks_total = await db.tasks.count_documents({"user_id": uid})
-    tasks_done = await db.tasks.count_documents({"user_id": uid, "completed": True})
     rewards_count = await db.rewards.count_documents({"user_id": uid})
-    redemptions_count = await db.redemptions.count_documents({"user_id": uid})
-
-    pipe = [
-        {"$match": {"user_id": uid, "type": "earn"}},
-        {"$group": {"_id": None, "total": {"$sum": "$amount"}}},
-    ]
-
-    earn_agg = await db.transactions.aggregate(pipe).to_list(1)
-    total_earned = earn_agg[0]["total"] if earn_agg else 0
-
-    habits = await db.habits.find(
-        {"user_id": uid},
-        {"_id": 0, "streak": 1, "longest_streak": 1},
-    ).to_list(1000)
-
-    best_streak = max([h.get("longest_streak", 0) for h in habits], default=0)
-    current_max_streak = max([h.get("streak", 0) for h in habits], default=0)
 
     return {
         "coin_balance": user.get("coin_balance", 0),
-        "total_earned": total_earned,
-        "habits_count": habits_count,
-        "tasks_total": tasks_total,
-        "tasks_done": tasks_done,
-        "tasks_pending": tasks_total - tasks_done,
+        "total_earned": metrics["total_earned"],
+        "habits_count": metrics["habits_count"],
+        "total_habit_completions": metrics["total_habit_completions"],
+        "tasks_total": metrics["tasks_total"],
+        "tasks_done": metrics["tasks_done"],
+        "tasks_pending": metrics["tasks_total"] - metrics["tasks_done"],
         "rewards_count": rewards_count,
-        "redemptions_count": redemptions_count,
-        "best_streak": best_streak,
-        "current_max_streak": current_max_streak,
+        "redemptions_count": metrics["redemptions_count"],
+        "quest_claims_count": metrics["quest_claims_count"],
+        "best_streak": metrics["best_streak"],
+        "current_max_streak": metrics["current_max_streak"],
     }
 
 
@@ -836,6 +835,7 @@ async def get_stats(user: dict = Depends(get_current_user)):
 
 ACHIEVEMENT_DEFS = [
     {"id": "first-habit", "name": "First Steps", "description": "Create your first habit", "icon": "Flame", "color": "#EF476F", "target": 1, "metric": "habits_count"},
+    {"id": "habits-25", "name": "Habit Builder", "description": "Complete habits 25 total times", "icon": "Flame", "color": "#22C55E", "target": 25, "metric": "total_habit_completions"},
     {"id": "first-task", "name": "On a Mission", "description": "Create your first task", "icon": "ListChecks", "color": "#118AB2", "target": 1, "metric": "tasks_total"},
     {"id": "tasks-10", "name": "Task Slayer", "description": "Complete 10 tasks", "icon": "Award", "color": "#06D6A0", "target": 10, "metric": "tasks_done"},
     {"id": "tasks-50", "name": "Productivity Pro", "description": "Complete 50 tasks", "icon": "Trophy", "color": "#FFD166", "target": 50, "metric": "tasks_done"},
@@ -846,6 +846,7 @@ ACHIEVEMENT_DEFS = [
     {"id": "coins-500", "name": "Coin Collector", "description": "Earn 500 coins", "icon": "Coins", "color": "#FFD166", "target": 500, "metric": "total_earned"},
     {"id": "first-redemption", "name": "Treat Yourself", "description": "Redeem your first reward", "icon": "Gift", "color": "#EF476F", "target": 1, "metric": "redemptions_count"},
     {"id": "redemptions-10", "name": "Big Spender", "description": "Redeem 10 rewards", "icon": "Gift", "color": "#118AB2", "target": 10, "metric": "redemptions_count"},
+    {"id": "quests-10", "name": "Quest Champion", "description": "Claim 10 quest rewards", "icon": "Flag", "color": "#BE185D", "target": 10, "metric": "quest_claims_count"},
 ]
 
 
@@ -854,6 +855,7 @@ async def compute_user_metrics(uid: str) -> dict:
     tasks_total = await db.tasks.count_documents({"user_id": uid})
     tasks_done = await db.tasks.count_documents({"user_id": uid, "completed": True})
     redemptions_count = await db.redemptions.count_documents({"user_id": uid})
+    quest_claims_count = await db.quest_claims.count_documents({"user_id": uid})
 
     pipe = [
         {"$match": {"user_id": uid, "type": "earn"}},
@@ -865,53 +867,82 @@ async def compute_user_metrics(uid: str) -> dict:
 
     habits = await db.habits.find(
         {"user_id": uid},
-        {"_id": 0, "longest_streak": 1},
+        {"_id": 0, "streak": 1, "longest_streak": 1, "total_completions": 1},
     ).to_list(1000)
 
     best_streak = max([h.get("longest_streak", 0) for h in habits], default=0)
+    current_max_streak = max([h.get("streak", 0) for h in habits], default=0)
+    total_habit_completions = sum([h.get("total_completions", 0) for h in habits])
 
     return {
         "habits_count": habits_count,
+        "total_habit_completions": total_habit_completions,
         "tasks_total": tasks_total,
         "tasks_done": tasks_done,
         "redemptions_count": redemptions_count,
+        "quest_claims_count": quest_claims_count,
         "total_earned": total_earned,
         "best_streak": best_streak,
+        "current_max_streak": current_max_streak,
     }
+
+
+async def sync_user_achievements(uid: str) -> list:
+    metrics = await compute_user_metrics(uid)
+
+    existing_docs = await db.user_achievements.find(
+        {"user_id": uid},
+        {"_id": 0, "achievement_id": 1},
+    ).to_list(200)
+
+    existing = {doc["achievement_id"] for doc in existing_docs}
+    newly_earned = []
+
+    for achievement in ACHIEVEMENT_DEFS:
+        achievement_id = achievement["id"]
+        progress = int(metrics.get(achievement["metric"], 0))
+        target = int(achievement["target"])
+
+        if progress >= target and achievement_id not in existing:
+            earned_at = now_utc_iso()
+
+            await db.user_achievements.update_one(
+                {"user_id": uid, "achievement_id": achievement_id},
+                {
+                    "$setOnInsert": {
+                        "user_id": uid,
+                        "achievement_id": achievement_id,
+                        "earned_at": earned_at,
+                    }
+                },
+                upsert=True,
+            )
+
+            newly_earned.append(achievement_id)
+            existing.add(achievement_id)
+
+    return newly_earned
 
 
 @api_router.get("/achievements")
 async def list_achievements(user: dict = Depends(get_current_user)):
     uid = user["id"]
+    newly_earned_ids = await sync_user_achievements(uid)
     metrics = await compute_user_metrics(uid)
 
     existing_docs = await db.user_achievements.find(
         {"user_id": uid},
         {"_id": 0},
-    ).to_list(100)
+    ).to_list(200)
 
     existing = {d["achievement_id"]: d for d in existing_docs}
-
     items = []
 
     for a in ACHIEVEMENT_DEFS:
         progress = int(metrics.get(a["metric"], 0))
         target = int(a["target"])
         earned = progress >= target
-        earned_at = None
-        newly_earned = False
-
-        if earned:
-            if a["id"] in existing:
-                earned_at = existing[a["id"]]["earned_at"]
-            else:
-                earned_at = now_utc_iso()
-                await db.user_achievements.insert_one({
-                    "user_id": uid,
-                    "achievement_id": a["id"],
-                    "earned_at": earned_at,
-                })
-                newly_earned = True
+        earned_at = existing.get(a["id"], {}).get("earned_at")
 
         items.append({
             **a,
@@ -919,7 +950,7 @@ async def list_achievements(user: dict = Depends(get_current_user)):
             "raw_progress": progress,
             "earned": earned,
             "earned_at": earned_at,
-            "newly_earned": newly_earned,
+            "newly_earned": a["id"] in newly_earned_ids,
             "percent": int(min(100, (progress / target) * 100)) if target else 0,
         })
 
@@ -1079,10 +1110,13 @@ async def claim_quest(quest_id: str, user: dict = Depends(get_current_user)):
         f"Quest reward: {quest['name']}",
     )
 
+    newly_earned = await sync_user_achievements(uid)
+
     return {
         "coins_earned": reward,
         "new_balance": new_balance,
         "quest_id": quest_id,
+        "new_achievements": newly_earned,
     }
 
 
@@ -1092,13 +1126,17 @@ async def claim_quest(quest_id: str, user: dict = Depends(get_current_user)):
 async def get_my_themes(user: dict = Depends(get_current_user)):
     uid = user["id"]
 
+    await sync_user_achievements(uid)
+
+    user = await db.users.find_one({"id": uid}, {"_id": 0})
+
     owned = user.get("owned_themes", DEFAULT_THEMES)
     selected = user.get("selected_theme", "light")
 
     earned_docs = await db.user_achievements.find(
         {"user_id": uid},
         {"_id": 0, "achievement_id": 1},
-    ).to_list(100)
+    ).to_list(200)
 
     earned_ids = {doc["achievement_id"] for doc in earned_docs}
 
@@ -1126,6 +1164,7 @@ async def get_my_themes(user: dict = Depends(get_current_user)):
         "unlocked_now": unlocked_now,
         "store": list(THEME_STORE.values()),
     }
+
 
 @api_router.post("/themes/select")
 async def select_theme(

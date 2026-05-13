@@ -954,9 +954,23 @@ async def list_achievements(user: dict = Depends(get_current_user)):
             "percent": int(min(100, (progress / target) * 100)) if target else 0,
         })
 
-    earned_count = sum(1 for x in items if x["earned"])
+        items.sort(
+            key=lambda x: (
+            x["earned"],
+            -(x.get("percent", 0)),
+    )
+)
 
-    return {"items": items, "earned_count": earned_count, "total": len(items)}
+earned_count = sum(1 for x in items if x["earned"])
+
+next_unlock = next((x for x in items if not x["earned"]), None)
+
+return {
+    "items": items,
+    "earned_count": earned_count,
+    "total": len(items),
+    "next_unlock": next_unlock,
+}
 
 
 # ============== Quests ==============

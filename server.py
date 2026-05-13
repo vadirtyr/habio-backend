@@ -33,6 +33,11 @@ THEME_STORE = {
     "ocean": {"id": "ocean", "name": "Ocean", "price": 750, "type": "store"},
     "coffee": {"id": "coffee", "name": "Coffee Shop", "price": 1000, "type": "store"},
     "forestNight": {"id": "Forest Night","type": "achievement","price": 0,"unlockAchievement": "streak-7",},
+    "aurora": {"id": "Aurora", "type": "achievement", "price": 0, "unlockAchievement": "coins-500"},
+    "sunset": {"id": "Sunset", "type": "achievement", "price": 0, "unlockAchievement": "tasks-50"},
+    "midnightGold": {"id": "Midnight Gold", "type": "achievement", "price": 0, "unlockAchievement": "streak-30"},
+    "oceanBreeze": {"id": "Ocean Breeze", "type": "achievement", "price": 0, "unlockAchievement": "habits-25"},
+    "roseGarden": {"id": "Rose Garden", "type": "achievement", "price": 0, "unlockAchievement": "quests-10"},
 }
 
 DEFAULT_THEMES = ["light", "dark", "nature", "focus"]

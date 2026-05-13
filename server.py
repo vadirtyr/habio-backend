@@ -32,6 +32,7 @@ THEME_STORE = {
     "sunset": {"id": "sunset", "name": "Sunset", "price": 500, "type": "store"},
     "ocean": {"id": "ocean", "name": "Ocean", "price": 750, "type": "store"},
     "coffee": {"id": "coffee", "name": "Coffee Shop", "price": 1000, "type": "store"},
+    "forestNight": {"id": "Forest Night","type": "achievement","price": 0,"unlockAchievement": "streak-7",},
 }
 
 DEFAULT_THEMES = ["light", "dark", "nature", "focus"]
@@ -1084,15 +1085,42 @@ async def claim_quest(quest_id: str, user: dict = Depends(get_current_user)):
 
 @api_router.get("/themes/me")
 async def get_my_themes(user: dict = Depends(get_current_user)):
+    uid = user["id"]
+
     owned = user.get("owned_themes", DEFAULT_THEMES)
     selected = user.get("selected_theme", "light")
+
+    earned_docs = await db.user_achievements.find(
+        {"user_id": uid},
+        {"_id": 0, "achievement_id": 1},
+    ).to_list(100)
+
+    earned_ids = {doc["achievement_id"] for doc in earned_docs}
+
+    unlocked_now = []
+
+    for theme_id, theme in THEME_STORE.items():
+        if theme.get("type") != "achievement":
+            continue
+
+        required = theme.get("unlockAchievement")
+
+        if required in earned_ids and theme_id not in owned:
+            owned.append(theme_id)
+            unlocked_now.append(theme_id)
+
+    if unlocked_now:
+        await db.users.update_one(
+            {"id": uid},
+            {"$set": {"owned_themes": owned}},
+        )
 
     return {
         "owned_themes": owned,
         "selected_theme": selected,
+        "unlocked_now": unlocked_now,
         "store": list(THEME_STORE.values()),
     }
-
 
 @api_router.post("/themes/select")
 async def select_theme(

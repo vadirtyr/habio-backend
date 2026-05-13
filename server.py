@@ -14,7 +14,7 @@ from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Respons
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, EmailStr, Field
-from typing import List, Optional, Literal
+from typing import Optional, Literal
 from datetime import datetime, timezone, timedelta
 
 
@@ -23,6 +23,18 @@ from datetime import datetime, timezone, timedelta
 JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_MINUTES = 60 * 24 * 7
 DIFFICULTY_COINS = {"easy": 5, "medium": 10, "hard": 20}
+
+THEME_STORE = {
+    "light": {"id": "light", "name": "Light", "price": 0, "type": "included"},
+    "dark": {"id": "dark", "name": "Dark", "price": 0, "type": "included"},
+    "nature": {"id": "nature", "name": "Nature", "price": 0, "type": "included"},
+    "focus": {"id": "focus", "name": "Focus", "price": 0, "type": "included"},
+    "sunset": {"id": "sunset", "name": "Sunset", "price": 500, "type": "store"},
+    "ocean": {"id": "ocean", "name": "Ocean", "price": 750, "type": "store"},
+    "coffee": {"id": "coffee", "name": "Coffee Shop", "price": 1000, "type": "store"},
+}
+
+DEFAULT_THEMES = ["light", "dark", "nature", "focus"]
 
 MONGO_URL = os.environ.get("MONGO_URL")
 DB_NAME = os.environ.get("DB_NAME")
@@ -102,6 +114,8 @@ def clean_user(u: dict) -> dict:
         "email": u["email"],
         "name": u.get("name", ""),
         "coin_balance": u.get("coin_balance", 0),
+        "selected_theme": u.get("selected_theme", "light"),
+        "owned_themes": u.get("owned_themes", DEFAULT_THEMES),
         "created_at": u.get("created_at"),
     }
 
@@ -196,6 +210,14 @@ class RewardIn(BaseModel):
     icon: Optional[str] = "gift"
 
 
+class ThemePurchaseIn(BaseModel):
+    theme_id: str
+
+
+class ThemeSelectIn(BaseModel):
+    theme_id: str
+
+
 # ============== Auth Routes ==============
 
 @api_router.post("/auth/register")
@@ -214,6 +236,8 @@ async def register(body: RegisterIn, response: Response):
         "password_hash": hash_password(body.password),
         "name": body.name or email.split("@")[0],
         "coin_balance": 0,
+        "selected_theme": "light",
+        "owned_themes": DEFAULT_THEMES.copy(),
         "created_at": now_utc_iso(),
     }
 
@@ -280,10 +304,7 @@ async def delete_account(
 
     response.delete_cookie("access_token", path="/")
 
-    return {
-        "ok": True,
-        "message": "Account deleted successfully",
-    }
+    return {"ok": True, "message": "Account deleted successfully"}
 
 
 @api_router.get("/auth/me")
@@ -441,14 +462,7 @@ async def complete_habit(habit_id: str, user: dict = Depends(get_current_user)):
     if bonus > 0:
         desc += f" (+{bonus} streak bonus)"
 
-    await log_transaction(
-        user["id"],
-        coins,
-        "earn",
-        "habit",
-        habit_id,
-        desc,
-    )
+    await log_transaction(user["id"], coins, "earn", "habit", habit_id, desc)
 
     updated = await db.habits.find_one({"id": habit_id}, {"_id": 0})
     updated["completed_today"] = True
@@ -1066,6 +1080,102 @@ async def claim_quest(quest_id: str, user: dict = Depends(get_current_user)):
     }
 
 
+# ============== Themes ==============
+
+@api_router.get("/themes/me")
+async def get_my_themes(user: dict = Depends(get_current_user)):
+    owned = user.get("owned_themes", DEFAULT_THEMES)
+    selected = user.get("selected_theme", "light")
+
+    return {
+        "owned_themes": owned,
+        "selected_theme": selected,
+        "store": list(THEME_STORE.values()),
+    }
+
+
+@api_router.post("/themes/select")
+async def select_theme(
+    body: ThemeSelectIn,
+    user: dict = Depends(get_current_user),
+):
+    theme_id = body.theme_id
+
+    if theme_id not in THEME_STORE:
+        raise HTTPException(status_code=404, detail="Theme not found")
+
+    owned = user.get("owned_themes", DEFAULT_THEMES)
+
+    if theme_id not in owned:
+        raise HTTPException(status_code=403, detail="Theme not owned")
+
+    await db.users.update_one(
+        {"id": user["id"]},
+        {"$set": {"selected_theme": theme_id}},
+    )
+
+    return {"ok": True, "selected_theme": theme_id}
+
+
+@api_router.post("/themes/purchase")
+async def purchase_theme(
+    body: ThemePurchaseIn,
+    user: dict = Depends(get_current_user),
+):
+    theme_id = body.theme_id
+
+    if theme_id not in THEME_STORE:
+        raise HTTPException(status_code=404, detail="Theme not found")
+
+    theme = THEME_STORE[theme_id]
+
+    if theme["type"] != "store":
+        raise HTTPException(status_code=400, detail="This theme cannot be purchased")
+
+    owned = user.get("owned_themes", DEFAULT_THEMES)
+
+    if theme_id in owned:
+        raise HTTPException(status_code=400, detail="Theme already owned")
+
+    balance = user.get("coin_balance", 0)
+    price = int(theme["price"])
+
+    if balance < price:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Not enough coins. Need {price - balance} more.",
+        )
+
+    new_balance = balance - price
+    updated_owned = owned + [theme_id]
+
+    await db.users.update_one(
+        {"id": user["id"]},
+        {
+            "$set": {
+                "coin_balance": new_balance,
+                "owned_themes": updated_owned,
+            }
+        },
+    )
+
+    await log_transaction(
+        user["id"],
+        -price,
+        "spend",
+        "theme",
+        theme_id,
+        f"Purchased theme: {theme['name']}",
+    )
+
+    return {
+        "ok": True,
+        "theme_id": theme_id,
+        "owned_themes": updated_owned,
+        "new_balance": new_balance,
+    }
+
+
 # --- API Health ---
 
 @api_router.get("/")
@@ -1132,6 +1242,8 @@ async def on_startup():
             "password_hash": hash_password(admin_password),
             "name": "Admin",
             "coin_balance": 0,
+            "selected_theme": "light",
+            "owned_themes": DEFAULT_THEMES.copy(),
             "created_at": now_utc_iso(),
         })
 

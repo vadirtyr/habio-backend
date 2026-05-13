@@ -834,19 +834,19 @@ async def get_stats(user: dict = Depends(get_current_user)):
 # ============== Achievements ==============
 
 ACHIEVEMENT_DEFS = [
-    {"id": "first-habit", "name": "First Steps", "description": "Create your first habit", "icon": "Flame", "color": "#EF476F", "target": 1, "metric": "habits_count"},
-    {"id": "habits-25", "name": "Habit Builder", "description": "Complete habits 25 total times", "icon": "Flame", "color": "#22C55E", "target": 25, "metric": "total_habit_completions"},
-    {"id": "first-task", "name": "On a Mission", "description": "Create your first task", "icon": "ListChecks", "color": "#118AB2", "target": 1, "metric": "tasks_total"},
-    {"id": "tasks-10", "name": "Task Slayer", "description": "Complete 10 tasks", "icon": "Award", "color": "#06D6A0", "target": 10, "metric": "tasks_done"},
-    {"id": "tasks-50", "name": "Productivity Pro", "description": "Complete 50 tasks", "icon": "Trophy", "color": "#FFD166", "target": 50, "metric": "tasks_done"},
-    {"id": "streak-3", "name": "Warming Up", "description": "Reach a 3-day streak", "icon": "Flame", "color": "#FFD166", "target": 3, "metric": "best_streak"},
-    {"id": "streak-7", "name": "On Fire", "description": "Reach a 7-day streak", "icon": "Flame", "color": "#EF476F", "target": 7, "metric": "best_streak"},
-    {"id": "streak-30", "name": "Unstoppable", "description": "Reach a 30-day streak", "icon": "Zap", "color": "#EF476F", "target": 30, "metric": "best_streak"},
-    {"id": "coins-100", "name": "Pocket Change", "description": "Earn 100 coins", "icon": "Coins", "color": "#FFD166", "target": 100, "metric": "total_earned"},
-    {"id": "coins-500", "name": "Coin Collector", "description": "Earn 500 coins", "icon": "Coins", "color": "#FFD166", "target": 500, "metric": "total_earned"},
-    {"id": "first-redemption", "name": "Treat Yourself", "description": "Redeem your first reward", "icon": "Gift", "color": "#EF476F", "target": 1, "metric": "redemptions_count"},
-    {"id": "redemptions-10", "name": "Big Spender", "description": "Redeem 10 rewards", "icon": "Gift", "color": "#118AB2", "target": 10, "metric": "redemptions_count"},
-    {"id": "quests-10", "name": "Quest Champion", "description": "Claim 10 quest rewards", "icon": "Flag", "color": "#BE185D", "target": 10, "metric": "quest_claims_count"},
+    {"id": "first-habit", "name": "First Steps", "category": "Habits", "description": "Create your first habit", "icon": "Flame", "color": "#EF476F", "target": 1, "metric": "habits_count"},
+    {"id": "habits-25", "name": "Habit Builder", "category": "Habits", "description": "Complete habits 25 total times", "icon": "Flame", "color": "#22C55E", "target": 25, "metric": "total_habit_completions"},
+    {"id": "first-task", "name": "On a Mission", "category": "Tasks", "description": "Create your first task", "icon": "ListChecks", "color": "#118AB2", "target": 1, "metric": "tasks_total"},
+    {"id": "tasks-10", "name": "Task Slayer", "category": "Tasks", "description": "Complete 10 tasks", "icon": "Award", "color": "#06D6A0", "target": 10, "metric": "tasks_done"},
+    {"id": "tasks-50", "name": "Productivity Pro", "category": "Tasks", "description": "Complete 50 tasks", "icon": "Trophy", "color": "#FFD166", "target": 50, "metric": "tasks_done"},
+    {"id": "streak-3", "name": "Warming Up", "category": "Streaks", "description": "Reach a 3-day streak", "icon": "Flame", "color": "#FFD166", "target": 3, "metric": "best_streak"},
+    {"id": "streak-7", "name": "On Fire", "category": "Streaks", "description": "Reach a 7-day streak", "icon": "Flame", "color": "#EF476F", "target": 7, "metric": "best_streak"},
+    {"id": "streak-30", "name": "Unstoppable", "category": "Streaks", "description": "Reach a 30-day streak", "icon": "Zap", "color": "#EF476F", "target": 30, "metric": "best_streak"},
+    {"id": "coins-100", "name": "Pocket Change", "category": "Coins", "description": "Earn 100 coins", "icon": "Coins", "color": "#FFD166", "target": 100, "metric": "total_earned"},
+    {"id": "coins-500", "name": "Coin Collector", "category": "Coins", "description": "Earn 500 coins", "icon": "Coins", "color": "#FFD166", "target": 500, "metric": "total_earned"},
+    {"id": "first-redemption", "name": "Treat Yourself", "category": "Rewards", "description": "Redeem your first reward", "icon": "Gift", "color": "#EF476F", "target": 1, "metric": "redemptions_count"},
+    {"id": "redemptions-10", "name": "Big Spender", "category": "Rewards", "description": "Redeem 10 rewards", "icon": "Gift", "color": "#118AB2", "target": 10, "metric": "redemptions_count"},
+    {"id": "quests-10", "name": "Quest Champion", "category": "Quests","description": "Claim 10 quest rewards", "icon": "Flag", "color": "#BE185D", "target": 10, "metric": "quest_claims_count"},
 ]
 
 

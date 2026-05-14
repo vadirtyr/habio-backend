@@ -25,19 +25,20 @@ ACCESS_TOKEN_MINUTES = 60 * 24 * 7
 DIFFICULTY_COINS = {"easy": 5, "medium": 10, "hard": 20}
 
 THEME_STORE = {
-    "light": {"id": "light", "name": "Light", "price": 0, "type": "included"},
-    "dark": {"id": "dark", "name": "Dark", "price": 0, "type": "included"},
-    "nature": {"id": "nature", "name": "Nature", "price": 0, "type": "included"},
-    "focus": {"id": "focus", "name": "Focus", "price": 0, "type": "included"},
+    "light": {"id": "light", "name": "Daylight", "price": 0, "type": "included"},
+    "dark": {"id": "dark", "name": "Midnight", "price": 0, "type": "included"},
+    "nature": {"id": "nature", "name": "Evergreen", "price": 0, "type": "included"},
+    "focus": {"id": "focus", "name": "Slate", "price": 0, "type": "included"},
 
-    "sunsetStore": {"id": "sunsetStore", "name": "Sunset", "price": 500, "type": "store"},
-    "ocean": {"id": "ocean", "name": "Ocean", "price": 750, "type": "store"},
-    "coffee": {"id": "coffee", "name": "Coffee Shop", "price": 1000, "type": "store"},
+    "amoled": {"id": "amoled", "name": "AMOLED", "price": 500, "type": "store"},
+    "ocean": {"id": "ocean", "name": "Tidal", "price": 750, "type": "store"},
+    "coffee": {"id": "coffee", "name": "Ember", "price": 1000, "type": "store"},
+    "solsticeStore": {"id": "solsticeStore", "name": "Solstice", "price": 1250, "type": "store"},
 
     "forestNight": {"id": "forestNight", "name": "Forest Night", "type": "achievement", "price": 0, "unlockAchievement": "streak-7"},
     "aurora": {"id": "aurora", "name": "Aurora", "type": "achievement", "price": 0, "unlockAchievement": "coins-500"},
-    "sunset": {"id": "sunset", "name": "Sunset", "type": "achievement", "price": 0, "unlockAchievement": "tasks-50"},
-    "midnightGold": {"id": "midnightGold", "name": "Midnight Gold", "type": "achievement", "price": 0, "unlockAchievement": "streak-30"},
+    "solstice": {"id": "solstice", "name": "Solstice Crown", "type": "achievement", "price": 0, "unlockAchievement": "tasks-50"},
+    "midnightGold": {"id": "midnightGold", "name": "Obsidian Gold", "type": "achievement", "price": 0, "unlockAchievement": "streak-30"},
     "oceanBreeze": {"id": "oceanBreeze", "name": "Ocean Breeze", "type": "achievement", "price": 0, "unlockAchievement": "habits-25"},
     "roseGarden": {"id": "roseGarden", "name": "Rose Garden", "type": "achievement", "price": 0, "unlockAchievement": "quests-10"},
 }

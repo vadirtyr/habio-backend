@@ -226,7 +226,9 @@ class ThemePurchaseIn(BaseModel):
 class ThemeSelectIn(BaseModel):
     theme_id: str
 
-
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
 # ============== Auth Routes ==============
 
 @api_router.post("/auth/register")
@@ -362,7 +364,29 @@ async def create_habit(body: HabitIn, user: dict = Depends(get_current_user)):
     await sync_user_achievements(user["id"])
 
     return doc
+@app.post("/api/auth/change-password")
+async def change_password(
+    payload: ChangePasswordRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    if len(payload.new_password) < 8:
+        raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
 
+    user = users_collection.find_one({"email": current_user["email"]})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if not verify_password(payload.current_password, user["password_hash"]):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+
+    new_hash = hash_password(payload.new_password)
+
+    users_collection.update_one(
+        {"_id": user["_id"]},
+        {"$set": {"password_hash": new_hash}}
+    )
+
+    return {"ok": True, "message": "Password changed successfully"}
 
 @api_router.put("/habits/{habit_id}")
 async def update_habit(habit_id: str, body: HabitIn, user: dict = Depends(get_current_user)):

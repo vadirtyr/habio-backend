@@ -43,6 +43,35 @@ THEME_STORE = {
     "midnightGold": {"id": "midnightGold", "name": "Obsidian Gold", "type": "achievement", "price": 0, "unlockAchievement": "streak-30"},
     "oceanBreeze": {"id": "oceanBreeze", "name": "Ocean Breeze", "type": "achievement", "price": 0, "unlockAchievement": "habits-25"},
     "roseGarden": {"id": "roseGarden", "name": "Rose Garden", "type": "achievement", "price": 0, "unlockAchievement": "quests-10"},
+"comet": {
+    "id": "comet",
+    "name": "Comet",
+    "type": "level",
+    "price": 0,
+    "unlockLevel": 3,
+},
+"nebula": {
+    "id": "nebula",
+    "name": "Nebula",
+    "type": "level",
+    "price": 0,
+    "unlockLevel": 5,
+},
+"eclipse": {
+    "id": "eclipse",
+    "name": "Eclipse",
+    "type": "level",
+    "price": 0,
+    "unlockLevel": 10,
+},
+"cosmicGold": {
+    "id": "cosmicGold",
+    "name": "Cosmic Gold",
+    "type": "level",
+    "price": 0,
+    "unlockLevel": 15,
+},
+
 }
 
 DEFAULT_THEMES = ["light", "dark", "nature", "focus"]
@@ -1296,7 +1325,18 @@ async def get_my_themes(user: dict = Depends(get_current_user)):
 
     owned = fresh_user.get("owned_themes", DEFAULT_THEMES)
     selected = fresh_user.get("selected_theme", "light")
+    level_data = xp_progress(fresh_user.get("xp", 0))
+current_level = level_data["level"]
 
+for theme_id, theme in THEME_STORE.items():
+    if theme.get("type") != "level":
+        continue
+
+    required_level = int(theme.get("unlockLevel", 999))
+
+    if current_level >= required_level and theme_id not in owned:
+        owned.append(theme_id)
+        unlocked_now.append(theme_id)
     earned_docs = await db.user_achievements.find(
         {"user_id": uid},
         {"_id": 0, "achievement_id": 1},

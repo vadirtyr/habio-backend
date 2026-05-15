@@ -22,7 +22,9 @@ from datetime import datetime, timezone, timedelta
 
 JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_MINUTES = 60 * 24 * 7
+
 DIFFICULTY_COINS = {"easy": 5, "medium": 10, "hard": 20}
+XP_PER_COIN = 2
 
 THEME_STORE = {
     "light": {"id": "light", "name": "Daylight", "price": 0, "type": "included"},
@@ -67,13 +69,13 @@ db = client[DB_NAME]
 
 # --- App ---
 
-app = FastAPI(title="Habio API")
+app = FastAPI(title="OurOrbit API")
 api_router = APIRouter(prefix="/api")
 
 
 @app.get("/")
 async def health():
-    return {"status": "ok", "service": "habio-api"}
+    return {"status": "ok", "service": "ourorbit-api"}
 
 
 # ============== Helpers ==============
@@ -117,12 +119,44 @@ def coins_for(difficulty: Optional[str], custom_coins: Optional[int]) -> int:
     return 10
 
 
+def level_for_xp(xp: int) -> int:
+    return max(1, int((xp / 100) ** 0.5) + 1)
+
+
+def xp_needed_for_level(level: int) -> int:
+    return ((level - 1) ** 2) * 100
+
+
+def xp_progress(xp: int) -> dict:
+    level = level_for_xp(xp)
+
+    current_level_xp = xp_needed_for_level(level)
+    next_level_xp = xp_needed_for_level(level + 1)
+
+    progress = xp - current_level_xp
+    needed = next_level_xp - current_level_xp
+
+    return {
+        "level": level,
+        "current_xp": xp,
+        "current_level_xp": current_level_xp,
+        "next_level_xp": next_level_xp,
+        "progress": progress,
+        "needed": needed,
+        "percent": int((progress / needed) * 100) if needed > 0 else 100,
+    }
+
+
 def clean_user(u: dict) -> dict:
+    xp = u.get("xp", 0)
+
     return {
         "id": u["id"],
         "email": u["email"],
         "name": u.get("name", ""),
         "coin_balance": u.get("coin_balance", 0),
+        "xp": xp,
+        "level_data": xp_progress(xp),
         "selected_theme": u.get("selected_theme", "light"),
         "owned_themes": u.get("owned_themes", DEFAULT_THEMES),
         "created_at": u.get("created_at"),
@@ -181,6 +215,25 @@ async def log_transaction(
     return tx
 
 
+async def award_user_xp(user: dict, coins_earned: int) -> dict:
+    xp_earned = max(0, int(coins_earned) * XP_PER_COIN)
+    old_xp = int(user.get("xp", 0))
+    new_xp = old_xp + xp_earned
+
+    old_level = level_for_xp(old_xp)
+    new_level = level_for_xp(new_xp)
+
+    return {
+        "xp_earned": xp_earned,
+        "old_xp": old_xp,
+        "new_xp": new_xp,
+        "old_level": old_level,
+        "new_level": new_level,
+        "leveled_up": new_level > old_level,
+        "level_data": xp_progress(new_xp),
+    }
+
+
 # ============== Models ==============
 
 class RegisterIn(BaseModel):
@@ -201,6 +254,7 @@ class HabitIn(BaseModel):
     difficulty: Optional[Literal["easy", "medium", "hard"]] = "medium"
     custom_coins: Optional[int] = None
     icon: Optional[str] = "flame"
+    category: Optional[str] = None
 
 
 class TaskIn(BaseModel):
@@ -226,9 +280,12 @@ class ThemePurchaseIn(BaseModel):
 class ThemeSelectIn(BaseModel):
     theme_id: str
 
+
 class ChangePasswordRequest(BaseModel):
     current_password: str
     new_password: str
+
+
 # ============== Auth Routes ==============
 
 @api_router.post("/auth/register")
@@ -247,6 +304,7 @@ async def register(body: RegisterIn, response: Response):
         "password_hash": hash_password(body.password),
         "name": body.name or email.split("@")[0],
         "coin_balance": 0,
+        "xp": 0,
         "selected_theme": "light",
         "owned_themes": DEFAULT_THEMES.copy(),
         "created_at": now_utc_iso(),
@@ -296,6 +354,40 @@ async def logout(response: Response):
     return {"ok": True}
 
 
+@api_router.get("/auth/me")
+async def me(user: dict = Depends(get_current_user)):
+    return clean_user(user)
+
+
+@api_router.post("/auth/change-password")
+async def change_password(
+    payload: ChangePasswordRequest,
+    user: dict = Depends(get_current_user),
+):
+    if len(payload.new_password) < 8:
+        raise HTTPException(
+            status_code=400,
+            detail="New password must be at least 8 characters",
+        )
+
+    fresh_user = await db.users.find_one({"id": user["id"]})
+
+    if not fresh_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if not verify_password(payload.current_password, fresh_user["password_hash"]):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+
+    new_hash = hash_password(payload.new_password)
+
+    await db.users.update_one(
+        {"id": user["id"]},
+        {"$set": {"password_hash": new_hash}},
+    )
+
+    return {"ok": True, "message": "Password changed successfully"}
+
+
 @api_router.delete("/auth/me")
 async def delete_account(
     response: Response,
@@ -316,11 +408,6 @@ async def delete_account(
     response.delete_cookie("access_token", path="/")
 
     return {"ok": True, "message": "Account deleted successfully"}
-
-
-@api_router.get("/auth/me")
-async def me(user: dict = Depends(get_current_user)):
-    return clean_user(user)
 
 
 # ============== Habits ==============
@@ -349,6 +436,7 @@ async def create_habit(body: HabitIn, user: dict = Depends(get_current_user)):
         "custom_coins": body.custom_coins,
         "coins_per_completion": coins_for(body.difficulty, body.custom_coins),
         "icon": body.icon or "flame",
+        "category": body.category,
         "streak": 0,
         "longest_streak": 0,
         "last_completed_date": None,
@@ -364,29 +452,7 @@ async def create_habit(body: HabitIn, user: dict = Depends(get_current_user)):
     await sync_user_achievements(user["id"])
 
     return doc
-@app.post("/api/auth/change-password")
-async def change_password(
-    payload: ChangePasswordRequest,
-    current_user: dict = Depends(get_current_user),
-):
-    if len(payload.new_password) < 8:
-        raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
 
-    user = users_collection.find_one({"email": current_user["email"]})
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    if not verify_password(payload.current_password, user["password_hash"]):
-        raise HTTPException(status_code=400, detail="Current password is incorrect")
-
-    new_hash = hash_password(payload.new_password)
-
-    users_collection.update_one(
-        {"_id": user["_id"]},
-        {"$set": {"password_hash": new_hash}}
-    )
-
-    return {"ok": True, "message": "Password changed successfully"}
 
 @api_router.put("/habits/{habit_id}")
 async def update_habit(habit_id: str, body: HabitIn, user: dict = Depends(get_current_user)):
@@ -398,6 +464,7 @@ async def update_habit(habit_id: str, body: HabitIn, user: dict = Depends(get_cu
         "custom_coins": body.custom_coins,
         "coins_per_completion": coins_for(body.difficulty, body.custom_coins),
         "icon": body.icon or "flame",
+        "category": body.category,
     }
 
     result = await db.habits.update_one(
@@ -470,6 +537,7 @@ async def complete_habit(habit_id: str, user: dict = Depends(get_current_user)):
 
     bonus = streak_bonus(new_streak)
     coins = base_coins + bonus
+    xp_data = await award_user_xp(user, coins)
 
     completions.append(today)
 
@@ -490,7 +558,12 @@ async def complete_habit(habit_id: str, user: dict = Depends(get_current_user)):
 
     await db.users.update_one(
         {"id": user["id"]},
-        {"$set": {"coin_balance": new_balance}},
+        {
+            "$set": {
+                "coin_balance": new_balance,
+                "xp": xp_data["new_xp"],
+            }
+        },
     )
 
     desc = f"Completed habit: {habit['name']}"
@@ -511,6 +584,11 @@ async def complete_habit(habit_id: str, user: dict = Depends(get_current_user)):
         "streak_bonus": bonus,
         "new_balance": new_balance,
         "streak": new_streak,
+        "xp_earned": xp_data["xp_earned"],
+        "level_data": xp_data["level_data"],
+        "leveled_up": xp_data["leveled_up"],
+        "old_level": xp_data["old_level"],
+        "new_level": xp_data["new_level"],
         "new_achievements": newly_earned,
     }
 
@@ -603,6 +681,8 @@ async def complete_task(task_id: str, user: dict = Depends(get_current_user)):
         task.get("custom_coins"),
     )
 
+    xp_data = await award_user_xp(user, coins)
+
     await db.tasks.update_one(
         {"id": task_id},
         {"$set": {"completed": True, "completed_at": now_utc_iso()}},
@@ -612,7 +692,12 @@ async def complete_task(task_id: str, user: dict = Depends(get_current_user)):
 
     await db.users.update_one(
         {"id": user["id"]},
-        {"$set": {"coin_balance": new_balance}},
+        {
+            "$set": {
+                "coin_balance": new_balance,
+                "xp": xp_data["new_xp"],
+            }
+        },
     )
 
     await log_transaction(
@@ -653,6 +738,11 @@ async def complete_task(task_id: str, user: dict = Depends(get_current_user)):
         "coins_earned": coins,
         "new_balance": new_balance,
         "next_task_id": next_task_id,
+        "xp_earned": xp_data["xp_earned"],
+        "level_data": xp_data["level_data"],
+        "leveled_up": xp_data["leveled_up"],
+        "old_level": xp_data["old_level"],
+        "new_level": xp_data["new_level"],
         "new_achievements": newly_earned,
     }
 
@@ -839,11 +929,13 @@ async def list_transactions(user: dict = Depends(get_current_user)):
 async def get_stats(user: dict = Depends(get_current_user)):
     uid = user["id"]
     metrics = await compute_user_metrics(uid)
-
     rewards_count = await db.rewards.count_documents({"user_id": uid})
+    xp = user.get("xp", 0)
 
     return {
         "coin_balance": user.get("coin_balance", 0),
+        "xp": xp,
+        "level_data": xp_progress(xp),
         "total_earned": metrics["total_earned"],
         "habits_count": metrics["habits_count"],
         "total_habit_completions": metrics["total_habit_completions"],
@@ -1148,11 +1240,17 @@ async def claim_quest(quest_id: str, user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=400, detail="Quest not completed yet")
 
     reward = int(quest["reward"])
+    xp_data = await award_user_xp(user, reward)
     new_balance = user.get("coin_balance", 0) + reward
 
     await db.users.update_one(
         {"id": uid},
-        {"$set": {"coin_balance": new_balance}},
+        {
+            "$set": {
+                "coin_balance": new_balance,
+                "xp": xp_data["new_xp"],
+            }
+        },
     )
 
     await db.quest_claims.insert_one({
@@ -1177,6 +1275,11 @@ async def claim_quest(quest_id: str, user: dict = Depends(get_current_user)):
         "coins_earned": reward,
         "new_balance": new_balance,
         "quest_id": quest_id,
+        "xp_earned": xp_data["xp_earned"],
+        "level_data": xp_data["level_data"],
+        "leveled_up": xp_data["leveled_up"],
+        "old_level": xp_data["old_level"],
+        "new_level": xp_data["new_level"],
         "new_achievements": newly_earned,
     }
 
@@ -1313,7 +1416,7 @@ async def purchase_theme(
 
 @api_router.get("/")
 async def api_health():
-    return {"message": "Habio API", "status": "ok"}
+    return {"message": "OurOrbit API", "status": "ok"}
 
 
 # --- Register Router & CORS ---
@@ -1375,6 +1478,7 @@ async def on_startup():
             "password_hash": hash_password(admin_password),
             "name": "Admin",
             "coin_balance": 0,
+            "xp": 0,
             "selected_theme": "light",
             "owned_themes": DEFAULT_THEMES.copy(),
             "created_at": now_utc_iso(),

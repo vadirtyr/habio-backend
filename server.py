@@ -324,7 +324,6 @@ class ChangePasswordRequest(BaseModel):
 # ============== Auth Routes ==============
 
 @api_router.post("/auth/register")
-@limiter.limit("5/minute")
 async def register(
     request: Request,
     body: RegisterIn,
@@ -368,7 +367,6 @@ async def register(
 
 
 @api_router.post("/auth/login")
-@limiter.limit("10/minute")
 async def login(
     request: Request,
     body: LoginIn,
@@ -407,7 +405,6 @@ async def me(user: dict = Depends(get_current_user)):
 
 
 @api_router.post("/auth/change-password")
-@limiter.limit("5/minute")
 async def change_password(
     request: Request,
     payload: ChangePasswordRequest,

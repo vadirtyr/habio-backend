@@ -16,7 +16,11 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, EmailStr, Field
 from typing import Optional, Literal
 from datetime import datetime, timezone, timedelta
-
+from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from slowapi.util import get_remote_address
+from fastapi.responses import JSONResponse
 
 # --- Config ---
 
@@ -79,7 +83,7 @@ DEFAULT_THEMES = ["light", "dark", "nature", "focus"]
 MONGO_URL = os.environ.get("MONGO_URL")
 DB_NAME = os.environ.get("DB_NAME")
 JWT_SECRET = os.environ.get("JWT_SECRET")
-
+ENVIRONMENT = os.environ.get("ENVIRONMENT", "development")
 if not MONGO_URL:
     raise RuntimeError("Missing required environment variable: MONGO_URL")
 
@@ -99,6 +103,8 @@ db = client[DB_NAME]
 # --- App ---
 
 app = FastAPI(title="OurOrbit API")
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
 api_router = APIRouter(prefix="/api")
 
 
@@ -318,7 +324,12 @@ class ChangePasswordRequest(BaseModel):
 # ============== Auth Routes ==============
 
 @api_router.post("/auth/register")
-async def register(body: RegisterIn, response: Response):
+@limiter.limit("5/minute")
+async def register(
+    request: Request,
+    body: RegisterIn,
+    response: Response,
+):
     email = body.email.lower()
     existing = await db.users.find_one({"email": email})
 
@@ -344,19 +355,25 @@ async def register(body: RegisterIn, response: Response):
     token = create_access_token(user_id, email)
 
     response.set_cookie(
-        "access_token",
-        token,
-        httponly=True,
-        samesite="lax",
-        max_age=ACCESS_TOKEN_MINUTES * 60,
-        path="/",
-    )
+    "access_token",
+    token,
+    httponly=True,
+    secure=ENVIRONMENT == "production",
+    samesite="lax",
+    max_age=ACCESS_TOKEN_MINUTES * 60,
+    path="/",
+)
 
     return {"token": token, "user": clean_user(user_doc)}
 
 
 @api_router.post("/auth/login")
-async def login(body: LoginIn, response: Response):
+@limiter.limit("10/minute")
+async def login(
+    request: Request,
+    body: LoginIn,
+    response: Response,
+):
     email = body.email.lower()
     user = await db.users.find_one({"email": email}, {"_id": 0})
 
@@ -366,13 +383,14 @@ async def login(body: LoginIn, response: Response):
     token = create_access_token(user["id"], email)
 
     response.set_cookie(
-        "access_token",
-        token,
-        httponly=True,
-        samesite="lax",
-        max_age=ACCESS_TOKEN_MINUTES * 60,
-        path="/",
-    )
+    "access_token",
+    token,
+    httponly=True,
+    secure=ENVIRONMENT == "production",
+    samesite="lax",
+    max_age=ACCESS_TOKEN_MINUTES * 60,
+    path="/",
+)
 
     return {"token": token, "user": clean_user(user)}
 
@@ -389,7 +407,9 @@ async def me(user: dict = Depends(get_current_user)):
 
 
 @api_router.post("/auth/change-password")
+@limiter.limit("5/minute")
 async def change_password(
+    request: Request,
     payload: ChangePasswordRequest,
     user: dict = Depends(get_current_user),
 ):
@@ -1323,28 +1343,32 @@ async def get_my_themes(user: dict = Depends(get_current_user)):
 
     fresh_user = await db.users.find_one({"id": uid}, {"_id": 0})
 
-    owned = fresh_user.get("owned_themes", DEFAULT_THEMES)
+    if not fresh_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    owned = fresh_user.get("owned_themes", DEFAULT_THEMES.copy())
     selected = fresh_user.get("selected_theme", "light")
+    unlocked_now = []
+
     level_data = xp_progress(fresh_user.get("xp", 0))
-current_level = level_data["level"]
+    current_level = level_data["level"]
 
-for theme_id, theme in THEME_STORE.items():
-    if theme.get("type") != "level":
-        continue
+    for theme_id, theme in THEME_STORE.items():
+        if theme.get("type") != "level":
+            continue
 
-    required_level = int(theme.get("unlockLevel", 999))
+        required_level = int(theme.get("unlockLevel", 999))
 
-    if current_level >= required_level and theme_id not in owned:
-        owned.append(theme_id)
-        unlocked_now.append(theme_id)
+        if current_level >= required_level and theme_id not in owned:
+            owned.append(theme_id)
+            unlocked_now.append(theme_id)
+
     earned_docs = await db.user_achievements.find(
         {"user_id": uid},
         {"_id": 0, "achievement_id": 1},
     ).to_list(200)
 
     earned_ids = {doc["achievement_id"] for doc in earned_docs}
-
-    unlocked_now = []
 
     for theme_id, theme in THEME_STORE.items():
         if theme.get("type") != "achievement":
@@ -1367,8 +1391,8 @@ for theme_id, theme in THEME_STORE.items():
         "selected_theme": selected,
         "unlocked_now": unlocked_now,
         "store": list(THEME_STORE.values()),
+        "level_data": level_data,
     }
-
 
 @api_router.post("/themes/select")
 async def select_theme(
@@ -1458,24 +1482,49 @@ async def purchase_theme(
 async def api_health():
     return {"message": "OurOrbit API", "status": "ok"}
 
+@api_router.get("/ready")
+async def readiness():
+    try:
+        await db.command("ping")
+        return {"status": "ready"}
+    except Exception:
+        raise HTTPException(
+            status_code=503,
+            detail="Database unavailable",
+        )
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    return JSONResponse(
+        status_code=429,
+        content={"detail": "Too many requests. Please slow down."},
+    )
 
 # --- Register Router & CORS ---
 
+if ENVIRONMENT == "production":
+    ALLOWED_ORIGINS = [
+        "https://habioapp.co",
+        "https://www.habioapp.co",
+        "https://main.dsrkbok7uhqk.amplifyapp.com",
+    ]
+else:
+    ALLOWED_ORIGINS = [
+        "http://localhost:3000",
+        "http://192.168.1.43:3000",
+        "https://habioapp.co",
+        "https://www.habioapp.co",
+        "https://main.dsrkbok7uhqk.amplifyapp.com",
+    ]
 app.include_router(api_router)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "https://habioapp.co",
-        "https://www.habioapp.co",
-        "https://main.dsrkbok7uhqk.amplifyapp.com",
-    ],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
+app.add_middleware(SlowAPIMiddleware)
 
 # --- Logging ---
 

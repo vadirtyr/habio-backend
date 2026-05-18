@@ -374,8 +374,9 @@ async def login(
 ):
     email = body.email.lower()
     user = await db.users.find_one({"email": email}, {"_id": 0})
-
+    
     if not user or not verify_password(body.password, user["password_hash"]):
+        logger.warning(f"Failed login attempt for {email}")
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
     token = create_access_token(user["id"], email)
@@ -1477,6 +1478,37 @@ async def purchase_theme(
 # --- API Health ---
 
 logger = logging.getLogger(__name__)
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start = datetime.now(timezone.utc)
+
+    try:
+        response = await call_next(request)
+
+        duration = (
+            datetime.now(timezone.utc) - start
+        ).total_seconds()
+
+        logger.info(
+            f"{request.method} {request.url.path} "
+            f"{response.status_code} "
+            f"{duration:.3f}s"
+        )
+
+        return response
+
+    except Exception:
+        duration = (
+            datetime.now(timezone.utc) - start
+        ).total_seconds()
+
+        logger.exception(
+            f"FAILED {request.method} {request.url.path} "
+            f"{duration:.3f}s"
+        )
+
+        raise
 
 @api_router.get("/")
 async def api_health():

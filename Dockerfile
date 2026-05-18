@@ -1,5 +1,5 @@
 FROM python:3.11-slim
-
+ARG CACHE_BUST=1
 WORKDIR /app
 
 COPY requirements-prod.txt .

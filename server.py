@@ -1476,6 +1476,8 @@ async def purchase_theme(
 
 # --- API Health ---
 
+logger = logging.getLogger(__name__)
+
 @api_router.get("/")
 async def api_health():
     return {"message": "OurOrbit API", "status": "ok"}
@@ -1496,7 +1498,14 @@ async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
         status_code=429,
         content={"detail": "Too many requests. Please slow down."},
     )
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.exception("Unhandled server error")
 
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error"},
+    )
 # --- Register Router & CORS ---
 
 if ENVIRONMENT == "production":
@@ -1530,8 +1539,6 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
-
-logger = logging.getLogger(__name__)
 
 
 # --- Startup / Shutdown ---

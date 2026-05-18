@@ -273,9 +273,8 @@ async def award_user_xp(user: dict, coins_earned: int) -> dict:
 
 class RegisterIn(BaseModel):
     email: EmailStr
-    password: str = Field(min_length=6)
-    name: Optional[str] = ""
-
+    password: str = Field(min_length=6, max_length=128)
+    name: Optional[str] = Field(default="", max_length=80)
 
 class LoginIn(BaseModel):
     email: EmailStr
@@ -283,29 +282,28 @@ class LoginIn(BaseModel):
 
 
 class HabitIn(BaseModel):
-    name: str
-    description: Optional[str] = ""
+    name: str = Field(min_length=1, max_length=80)
+    description: Optional[str] = Field(default="", max_length=300)
     frequency: Literal["daily", "weekly"] = "daily"
     difficulty: Optional[Literal["easy", "medium", "hard"]] = "medium"
-    custom_coins: Optional[int] = None
-    icon: Optional[str] = "flame"
-    category: Optional[str] = None
+    custom_coins: Optional[int] = Field(default=None, ge=1, le=100)
+    icon: Optional[str] = Field(default="flame", max_length=40)
+    category: Optional[str] = Field(default=None, max_length=60)
 
 
 class TaskIn(BaseModel):
-    name: str
-    description: Optional[str] = ""
+    name: str = Field(min_length=1, max_length=100)
+    description: Optional[str] = Field(default="", max_length=300)
     difficulty: Optional[Literal["easy", "medium", "hard"]] = "medium"
-    custom_coins: Optional[int] = None
-    due_date: Optional[str] = None
+    custom_coins: Optional[int] = Field(default=None, ge=1, le=100)
+    due_date: Optional[str] = Field(default=None, max_length=40)
     recurrence: Optional[Literal["none", "daily", "weekly"]] = "none"
 
-
 class RewardIn(BaseModel):
-    name: str
-    description: Optional[str] = ""
-    cost: int = Field(gt=0)
-    icon: Optional[str] = "gift"
+    name: str = Field(min_length=1, max_length=80)
+    description: Optional[str] = Field(default="", max_length=300)
+    cost: int = Field(gt=0, le=10000)
+    icon: Optional[str] = Field(default="gift", max_length=40)
 
 
 class ThemePurchaseIn(BaseModel):
@@ -317,8 +315,8 @@ class ThemeSelectIn(BaseModel):
 
 
 class ChangePasswordRequest(BaseModel):
-    current_password: str
-    new_password: str
+    current_password: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=8, max_length=128)
 
 
 # ============== Auth Routes ==============

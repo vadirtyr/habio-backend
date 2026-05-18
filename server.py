@@ -1544,6 +1544,24 @@ async def on_startup():
     await db.rewards.create_index("user_id")
     await db.redemptions.create_index("user_id")
     await db.transactions.create_index("user_id")
+    await db.habits.create_index([("user_id", 1), ("created_at", -1)])
+    await db.habits.create_index([("user_id", 1), ("last_completed_date", -1)])
+    await db.habits.create_index([("user_id", 1), ("total_completions", -1)])
+
+    await db.tasks.create_index([("user_id", 1), ("completed", 1)])
+    await db.tasks.create_index([("user_id", 1), ("completed_at", -1)])
+    await db.tasks.create_index([("user_id", 1), ("due_date", 1)])
+    await db.tasks.create_index([("user_id", 1), ("created_at", -1)])
+
+    await db.rewards.create_index([("user_id", 1), ("created_at", -1)])
+
+    await db.redemptions.create_index([("user_id", 1), ("redeemed_at", -1)])
+
+    await db.transactions.create_index([("user_id", 1), ("created_at", -1)])
+    await db.transactions.create_index([("user_id", 1), ("type", 1)])
+    await db.transactions.create_index([("user_id", 1), ("source", 1)])
+
+    await db.quest_claims.create_index([("user_id", 1), ("claimed_at", -1)])
     await db.user_achievements.create_index(
         [("user_id", 1), ("achievement_id", 1)],
         unique=True,

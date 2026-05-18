@@ -639,6 +639,37 @@ async def complete_habit(habit_id: str, user: dict = Depends(get_current_user)):
         "new_level": xp_data["new_level"],
         "new_achievements": newly_earned,
     }
+async def create_next_recurring_task_if_needed(task: dict, user_id: str):
+    recurrence = task.get("recurrence", "none")
+
+    if recurrence not in ("daily", "weekly"):
+        return None
+
+    delta_days = 1 if recurrence == "daily" else 7
+
+    next_due = (
+        datetime.now(timezone.utc).date() + timedelta(days=delta_days)
+    ).isoformat()
+
+    next_task_id = str(uuid.uuid4())
+
+    await db.tasks.insert_one({
+        "id": next_task_id,
+        "user_id": user_id,
+        "name": task["name"],
+        "description": task.get("description", ""),
+        "difficulty": task.get("difficulty"),
+        "custom_coins": task.get("custom_coins"),
+        "coins_reward": task.get("coins_reward"),
+        "due_date": next_due,
+        "recurrence": recurrence,
+        "completed": False,
+        "completed_at": None,
+        "created_at": now_utc_iso(),
+    })
+
+    return next_task_id
+
 
 
 # ============== Tasks ==============
@@ -757,28 +788,10 @@ async def complete_task(task_id: str, user: dict = Depends(get_current_user)):
         f"Completed task: {task['name']}",
     )
 
-    next_task_id = None
-    recurrence = task.get("recurrence", "none")
-
-    if recurrence in ("daily", "weekly"):
-        delta_days = 1 if recurrence == "daily" else 7
-        next_due = (datetime.now(timezone.utc).date() + timedelta(days=delta_days)).isoformat()
-        next_task_id = str(uuid.uuid4())
-
-        await db.tasks.insert_one({
-            "id": next_task_id,
-            "user_id": user["id"],
-            "name": task["name"],
-            "description": task.get("description", ""),
-            "difficulty": task.get("difficulty"),
-            "custom_coins": task.get("custom_coins"),
-            "coins_reward": task.get("coins_reward"),
-            "due_date": next_due,
-            "recurrence": recurrence,
-            "completed": False,
-            "completed_at": None,
-            "created_at": now_utc_iso(),
-        })
+    next_task_id = await create_next_recurring_task_if_needed(
+    task,
+    user["id"],
+)
 
     newly_earned = await sync_user_achievements(user["id"])
 

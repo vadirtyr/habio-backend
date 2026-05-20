@@ -23,6 +23,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from slowapi.util import get_remote_address
 from fastapi.responses import JSONResponse
+from email_service import send_password_reset_email
 
 # --- Config ---
 
@@ -468,7 +469,11 @@ async def forgot_password(
     email = payload.email.lower()
 
     user = await db.users.find_one({"email": email})
+    reset_link = (
+        f"https://ourorbit.app/reset-password?token={reset_token}"
+        )
 
+    await send_password_reset_email(email, reset_link)
     # Always return success to avoid email enumeration
     if not user:
         return {

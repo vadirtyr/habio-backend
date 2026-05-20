@@ -9,6 +9,8 @@ import uuid
 import logging
 import bcrypt
 import jwt
+import secrets
+import asyncio
 
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response
 from starlette.middleware.cors import CORSMiddleware
@@ -135,6 +137,8 @@ def create_access_token(user_id: str, email: str) -> str:
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
+def create_reset_token() -> str:
+    return secrets.token_urlsafe(48)
 
 def now_utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -197,6 +201,18 @@ def clean_user(u: dict) -> dict:
         "created_at": u.get("created_at"),
     }
 
+async def cleanup_expired_password_resets():
+    while True:
+        try:
+            await db.password_resets.delete_many({
+                "expires_at": {
+                    "$lt": now_utc_iso(),
+                }
+            })
+        except Exception:
+            logger.exception("Failed to clean up expired password reset tokens")
+
+        await asyncio.sleep(60 * 60 * 24)
 
 async def get_current_user(request: Request) -> dict:
     token = None
@@ -273,7 +289,7 @@ async def award_user_xp(user: dict, coins_earned: int) -> dict:
 
 class RegisterIn(BaseModel):
     email: EmailStr
-    password: str = Field(min_length=6, max_length=128)
+    password: str = Field(min_length=8, max_length=128)
     name: Optional[str] = Field(default="", max_length=80)
 
 class LoginIn(BaseModel):
@@ -318,6 +334,13 @@ class ChangePasswordRequest(BaseModel):
     current_password: str = Field(min_length=1, max_length=128)
     new_password: str = Field(min_length=8, max_length=128)
 
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str = Field(min_length=8, max_length=128)
 
 # ============== Auth Routes ==============
 
@@ -353,16 +376,17 @@ async def register(
     token = create_access_token(user_id, email)
 
     response.set_cookie(
-    "access_token",
-    token,
-    httponly=True,
-    secure=ENVIRONMENT == "production",
-    samesite="lax",
-    max_age=ACCESS_TOKEN_MINUTES * 60,
-    path="/",
-)
+        "access_token",
+        token,
+        httponly=True,
+        secure=ENVIRONMENT == "production",
+        samesite="lax",
+        max_age=ACCESS_TOKEN_MINUTES * 60,
+        path="/",
+    )
 
     return {"token": token, "user": clean_user(user_doc)}
+
 
 
 @api_router.post("/auth/login")
@@ -435,6 +459,126 @@ async def change_password(
 
     return {"ok": True, "message": "Password changed successfully"}
 
+@api_router.post("/auth/forgot-password")
+@limiter.limit("5/minute")
+async def forgot_password(
+    request: Request,
+    payload: ForgotPasswordRequest,
+):
+    email = payload.email.lower()
+
+    user = await db.users.find_one({"email": email})
+
+    # Always return success to avoid email enumeration
+    if not user:
+        return {
+            "ok": True,
+            "message": "If an account exists, a reset link has been sent.",
+        }
+    await db.password_resets.delete_many({
+    "expires_at": {
+        "$lt": now_utc_iso(),
+    }
+    })
+    reset_token = create_reset_token()
+
+    expires_at = (
+        datetime.now(timezone.utc) + timedelta(hours=1)
+    ).isoformat()
+    await db.password_resets.update_many(
+    {
+        "user_id": user["id"],
+        "used": False,
+    },
+    {
+        "$set": {
+            "used": True,
+            "invalidated_at": now_utc_iso(),
+        }
+    },
+    )
+    await db.password_resets.insert_one({
+        "id": str(uuid.uuid4()),
+        "user_id": user["id"],
+        "email": email,
+        "token": reset_token,
+        "expires_at": expires_at,
+        "used": False,
+        "created_at": now_utc_iso(),
+    })
+
+    # TEMPORARY:
+    # replace later with real email delivery
+    logger.info(
+        f"PASSWORD RESET TOKEN for {email}: {reset_token}"
+    )
+
+    return {
+        "ok": True,
+        "message": "If an account exists, a reset link has been sent.",
+    }
+
+@api_router.post("/auth/reset-password")
+@limiter.limit("5/minute")
+async def reset_password(
+    request: Request,
+    payload: ResetPasswordRequest,
+):
+    reset_doc = await db.password_resets.find_one({
+        "token": payload.token,
+        "used": False,
+    })
+
+    if not reset_doc:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid or expired reset token",
+        )
+
+    try:
+        expires_at = datetime.fromisoformat(
+            reset_doc["expires_at"]
+        )
+    except Exception:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid reset token",
+        )
+
+    if expires_at < datetime.now(timezone.utc):
+        raise HTTPException(
+            status_code=400,
+            detail="Reset token expired",
+        )
+
+    new_hash = hash_password(payload.new_password)
+
+    await db.users.update_one(
+        {"id": reset_doc["user_id"]},
+        {
+            "$set": {
+                "password_hash": new_hash,
+            }
+        },
+    )
+
+    await db.password_resets.update_many(
+        {
+            "user_id": reset_doc["user_id"],
+            "used": False,
+        },
+        {
+            "$set": {
+                "used": True,
+                "invalidated_at": now_utc_iso(),
+            }
+        },
+    )
+
+    return {
+        "ok": True,
+        "message": "Password reset successful",
+    }
 
 @api_router.delete("/auth/me")
 async def delete_account(
@@ -442,7 +586,7 @@ async def delete_account(
     user: dict = Depends(get_current_user),
 ):
     uid = user["id"]
-
+    await db.password_resets.delete_many({"user_id": uid})
     await db.habits.delete_many({"user_id": uid})
     await db.tasks.delete_many({"user_id": uid})
     await db.rewards.delete_many({"user_id": uid})
@@ -452,6 +596,7 @@ async def delete_account(
     await db.quest_claims.delete_many({"user_id": uid})
 
     await db.users.delete_one({"id": uid})
+    
 
     response.delete_cookie("access_token", path="/")
 
@@ -1622,7 +1767,16 @@ async def on_startup():
         [("user_id", 1), ("quest_id", 1), ("period_key", 1)],
         unique=True,
     )
+    await db.password_resets.create_index(
+    [("token", 1)],
+    unique=True,
+)
 
+    await db.password_resets.create_index(
+    [("expires_at", 1)],
+)
+
+    asyncio.create_task(cleanup_expired_password_resets())
     admin_email = os.environ.get("ADMIN_EMAIL", "admin@example.com").lower()
     admin_password = os.environ.get("ADMIN_PASSWORD", "admin123")
 

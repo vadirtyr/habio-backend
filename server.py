@@ -459,7 +459,6 @@ async def change_password(
     )
 
     return {"ok": True, "message": "Password changed successfully"}
-
 @api_router.post("/auth/forgot-password")
 @limiter.limit("5/minute")
 async def forgot_password(
@@ -469,39 +468,41 @@ async def forgot_password(
     email = payload.email.lower()
 
     user = await db.users.find_one({"email": email})
-    reset_link = (
-        f"https://ourorbit.app/reset-password?token={reset_token}"
-        )
 
-    await send_password_reset_email(email, reset_link)
     # Always return success to avoid email enumeration
     if not user:
         return {
             "ok": True,
             "message": "If an account exists, a reset link has been sent.",
         }
+
+    # Clean up expired tokens
     await db.password_resets.delete_many({
-    "expires_at": {
-        "$lt": now_utc_iso(),
-    }
+        "expires_at": {
+            "$lt": now_utc_iso(),
+        }
     })
+
+    # Invalidate existing active reset tokens
+    await db.password_resets.update_many(
+        {
+            "user_id": user["id"],
+            "used": False,
+        },
+        {
+            "$set": {
+                "used": True,
+                "invalidated_at": now_utc_iso(),
+            }
+        },
+    )
+
     reset_token = create_reset_token()
 
     expires_at = (
         datetime.now(timezone.utc) + timedelta(hours=1)
     ).isoformat()
-    await db.password_resets.update_many(
-    {
-        "user_id": user["id"],
-        "used": False,
-    },
-    {
-        "$set": {
-            "used": True,
-            "invalidated_at": now_utc_iso(),
-        }
-    },
-    )
+
     await db.password_resets.insert_one({
         "id": str(uuid.uuid4()),
         "user_id": user["id"],
@@ -512,17 +513,24 @@ async def forgot_password(
         "created_at": now_utc_iso(),
     })
 
-    # TEMPORARY:
-    # replace later with real email delivery
-    logger.info(
-        f"PASSWORD RESET TOKEN for {email}: {reset_token}"
+    APP_URL = os.getenv(
+        "APP_URL",
+        "https://ourorbit.net",
+    )
+
+    reset_link = (
+        f"{APP_URL}/reset-password?token={reset_token}"
+    )
+
+    await send_password_reset_email(
+        email,
+        reset_link,
     )
 
     return {
         "ok": True,
         "message": "If an account exists, a reset link has been sent.",
     }
-
 @api_router.post("/auth/reset-password")
 @limiter.limit("5/minute")
 async def reset_password(

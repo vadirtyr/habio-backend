@@ -6,7 +6,7 @@ resend.api_key = os.getenv("RESEND_API_KEY")
 EMAIL_FROM = os.getenv("EMAIL_FROM")
 
 
-async def send_password_reset_email(to_email, reset_link):
+def send_password_reset_email(to_email, reset_link):
     resend.Emails.send({
         "from": f"OurOrbit <{EMAIL_FROM}>",
         "to": [to_email],

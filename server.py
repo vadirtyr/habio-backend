@@ -1723,10 +1723,12 @@ if ENVIRONMENT == "production":
 ]
 else:
     ALLOWED_ORIGINS = [
-        "http://localhost:3000",
-        "http://192.168.1.43:3000",
-        "https://habioapp.co",
+                "https://habioapp.co",
         "https://www.habioapp.co",
+        "https://ourorbit.net",
+        "https://www.ourorbit.net",
+        "https://ourorbit.app",
+        "https://www.ourorbit.app",
         "https://main.dsrkbok7uhqk.amplifyapp.com",
     ]
 app.include_router(api_router)

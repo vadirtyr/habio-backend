@@ -1713,10 +1713,14 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 if ENVIRONMENT == "production":
     ALLOWED_ORIGINS = [
-        "https://habioapp.co",
-        "https://www.habioapp.co",
-        "https://main.dsrkbok7uhqk.amplifyapp.com",
-    ]
+       "https://habioapp.co",
+    "https://www.habioapp.co",
+    "https://ourorbit.app",
+    "https://www.ourorbit.app",
+    "https://ourorbit.net",
+    "https://www.ourorbit.net",
+    "https://main.dsrkbok7uhqk.amplifyapp.com",
+]
 else:
     ALLOWED_ORIGINS = [
         "http://localhost:3000",

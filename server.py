@@ -522,7 +522,7 @@ async def forgot_password(
         f"{APP_URL}/reset-password?token={reset_token}"
     )
 
-    await send_password_reset_email(
+    send_password_reset_email(
         email,
         reset_link,
     )

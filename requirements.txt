@@ -27,3 +27,6 @@ typer>=0.9.0
 emergentintegrations==0.1.0
 slowapi==0.1.9
 resend
+google-auth
+requests
+cryptography

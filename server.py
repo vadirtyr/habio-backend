@@ -24,6 +24,10 @@ from slowapi.middleware import SlowAPIMiddleware
 from slowapi.util import get_remote_address
 from fastapi.responses import JSONResponse
 from email_service import send_password_reset_email
+from google.oauth2 import id_token
+from google.auth.transport import requests as google_requests
+import requests
+from jwt import PyJWKClient
 
 # --- Config ---
 
@@ -32,7 +36,12 @@ ACCESS_TOKEN_MINUTES = 60 * 24 * 7
 
 DIFFICULTY_COINS = {"easy": 5, "medium": 10, "hard": 20}
 XP_PER_COIN = 2
+GOOGLE_WEB_CLIENT_ID = os.environ.get("GOOGLE_WEB_CLIENT_ID")
+GOOGLE_IOS_CLIENT_ID = os.environ.get("GOOGLE_IOS_CLIENT_ID")
+GOOGLE_ANDROID_CLIENT_ID = os.environ.get("GOOGLE_ANDROID_CLIENT_ID")
 
+APPLE_BUNDLE_ID = os.environ.get("APPLE_BUNDLE_ID")
+APPLE_SERVICE_ID = os.environ.get("APPLE_SERVICE_ID")
 THEME_STORE = {
     "light": {"id": "light", "name": "Daylight", "price": 0, "type": "included"},
     "dark": {"id": "dark", "name": "Midnight", "price": 0, "type": "included"},
@@ -138,6 +147,24 @@ def create_access_token(user_id: str, email: str) -> str:
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
+def build_auth_response(user: dict, response: Response):
+    token = create_access_token(user["id"], user["email"])
+
+    response.set_cookie(
+        "access_token",
+        token,
+        httponly=True,
+        secure=ENVIRONMENT == "production",
+        samesite="lax",
+        max_age=ACCESS_TOKEN_MINUTES * 60,
+        path="/",
+    )
+
+    return {
+        "token": token,
+        "user": clean_user(user),
+    }
+
 def create_reset_token() -> str:
     return secrets.token_urlsafe(48)
 
@@ -194,6 +221,7 @@ def clean_user(u: dict) -> dict:
         "id": u["id"],
         "email": u["email"],
         "name": u.get("name", ""),
+        "auth_providers": u.get("auth_providers", ["password"]),
         "coin_balance": u.get("coin_balance", 0),
         "xp": xp,
         "level_data": xp_progress(xp),
@@ -297,6 +325,13 @@ class LoginIn(BaseModel):
     email: EmailStr
     password: str
 
+class GoogleAuthIn(BaseModel):
+    id_token: str
+
+
+class AppleAuthIn(BaseModel):
+    identity_token: str
+    name: Optional[str] = ""
 
 class HabitIn(BaseModel):
     name: str = Field(min_length=1, max_length=80)
@@ -361,6 +396,9 @@ async def register(
     user_id = str(uuid.uuid4())
 
     user_doc = {
+        "auth_providers": ["password"],
+        "google_id": None,
+        "apple_id": None,
         "id": user_id,
         "email": email,
         "password_hash": hash_password(body.password),
@@ -400,7 +438,11 @@ async def login(
     email = body.email.lower()
     user = await db.users.find_one({"email": email}, {"_id": 0})
     
-    if not user or not verify_password(body.password, user["password_hash"]):
+    if (
+    not user
+    or not user.get("password_hash")
+    or not verify_password(body.password, user["password_hash"])
+    ):
         logger.warning(f"Failed login attempt for {email}")
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
@@ -418,6 +460,96 @@ async def login(
 
     return {"token": token, "user": clean_user(user)}
 
+@api_router.post("/auth/google")
+@limiter.limit("10/minute")
+async def google_auth(
+    request: Request,
+    body: GoogleAuthIn,
+    response: Response,
+):
+    try:
+        payload = id_token.verify_oauth2_token(
+            body.id_token,
+            google_requests.Request(),
+        )
+
+    except Exception:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid Google token",
+        )
+
+    audience = payload.get("aud")
+
+    allowed_audiences = [
+        GOOGLE_WEB_CLIENT_ID,
+        GOOGLE_IOS_CLIENT_ID,
+        GOOGLE_ANDROID_CLIENT_ID,
+    ]
+
+    if audience not in allowed_audiences:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid Google client",
+        )
+
+    google_id = payload.get("sub")
+    email = payload.get("email", "").lower()
+
+    if not email:
+        raise HTTPException(
+            status_code=400,
+            detail="Google account missing email",
+        )
+
+    user = await db.users.find_one(
+    {
+        "$or": [
+            {"google_id": google_id},
+            {"email": email},
+        ]
+    },
+    {"_id": 0},
+    )
+
+    if not user:
+        user = {
+            "id": str(uuid.uuid4()),
+            "email": email,
+            "password_hash": None,
+            "google_id": google_id,
+            "auth_providers": ["google"],
+            "name": payload.get("name", email.split("@")[0]),
+            "coin_balance": 0,
+            "xp": 0,
+            "selected_theme": "light",
+            "owned_themes": DEFAULT_THEMES.copy(),
+            "created_at": now_utc_iso(),
+        }
+
+        await db.users.insert_one(user)
+
+    else:
+        updates = {}
+
+        providers = user.get("auth_providers", [])
+
+        if "google" not in providers:
+            providers.append("google")
+            updates["auth_providers"] = providers
+
+        if not user.get("google_id"):
+            updates["google_id"] = google_id
+
+        if updates:
+            await db.users.update_one(
+                {"id": user["id"]},
+                {"$set": updates},
+            )
+
+            user.update(updates)
+
+    return build_auth_response(user, response)
 
 @api_router.post("/auth/logout")
 async def logout(response: Response):
@@ -607,7 +739,6 @@ async def delete_account(
     await db.transactions.delete_many({"user_id": uid})
     await db.user_achievements.delete_many({"user_id": uid})
     await db.quest_claims.delete_many({"user_id": uid})
-
     await db.users.delete_one({"id": uid})
     
 
@@ -782,8 +913,9 @@ async def complete_habit(habit_id: str, user: dict = Depends(get_current_user)):
 
     updated = await db.habits.find_one({"id": habit_id}, {"_id": 0})
     updated["completed_today"] = True
-
+    fresh_user = await db.users.find_one({"id": user["id"]}, {"_id": 0})
     return {
+        "user": clean_user(fresh_user),
         "habit": updated,
         "coins_earned": coins,
         "base_coins": base_coins,
@@ -952,8 +1084,10 @@ async def complete_task(task_id: str, user: dict = Depends(get_current_user)):
 )
 
     newly_earned = await sync_user_achievements(user["id"])
+    fresh_user = await db.users.find_one({"id": user["id"]}, {"_id": 0})
 
     return {
+        "user": clean_user(fresh_user),
         "coins_earned": coins,
         "new_balance": new_balance,
         "next_task_id": next_task_id,
@@ -990,10 +1124,16 @@ async def uncomplete_task(task_id: str, user: dict = Depends(get_current_user)):
     )
 
     new_balance = max(0, user.get("coin_balance", 0) - coins)
-
+    xp_loss = coins * XP_PER_COIN
+    new_xp = max(0, int(user.get("xp", 0)) - xp_loss)
     await db.users.update_one(
-        {"id": user["id"]},
-        {"$set": {"coin_balance": new_balance}},
+    {"id": user["id"]},
+    {
+        "$set": {
+            "coin_balance": new_balance,
+            "xp": new_xp,
+        }
+    },
     )
 
     await log_transaction(
@@ -1755,6 +1895,8 @@ logging.basicConfig(
 @app.on_event("startup")
 async def on_startup():
     await db.users.create_index("email", unique=True)
+    await db.users.create_index("google_id", sparse=True)
+    await db.users.create_index("apple_id", sparse=True)
     await db.habits.create_index("user_id")
     await db.tasks.create_index("user_id")
     await db.rewards.create_index("user_id")

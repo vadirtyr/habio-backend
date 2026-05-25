@@ -14,3 +14,6 @@ pyjwt>=2.10.1
 python-multipart>=0.0.9
 slowapi==0.1.9
 resend
+google-auth
+requests
+PyJWT

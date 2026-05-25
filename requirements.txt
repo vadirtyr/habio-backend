@@ -30,3 +30,4 @@ resend
 google-auth
 requests
 cryptography
+PyJWT

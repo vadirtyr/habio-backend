@@ -708,7 +708,36 @@ async def delete_account(
     response.delete_cookie("access_token", path="/")
 
     return {"ok": True, "message": "Account deleted successfully"}
+@api_router.post("/account/reset-data")
+async def reset_account_data(
+    user: dict = Depends(get_current_user),
+):
+    uid = user["id"]
 
+    await db.habits.delete_many({"user_id": uid})
+    await db.tasks.delete_many({"user_id": uid})
+    await db.rewards.delete_many({"user_id": uid})
+    await db.redemptions.delete_many({"user_id": uid})
+    await db.transactions.delete_many({"user_id": uid})
+    await db.user_achievements.delete_many({"user_id": uid})
+    await db.quest_claims.delete_many({"user_id": uid})
+
+    await db.users.update_one(
+        {"id": uid},
+        {
+            "$set": {
+                "coin_balance": 0,
+                "xp": 0,
+                "selected_theme": "light",
+                "owned_themes": DEFAULT_THEMES.copy(),
+            }
+        },
+    )
+
+    return {
+        "ok": True,
+        "message": "Account data reset successfully",
+    }
 
 # ============== Habits ==============
 

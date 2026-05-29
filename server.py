@@ -212,6 +212,19 @@ def clean_user(u: dict) -> dict:
         "created_at": u.get("created_at"),
     }
 
+def clean_profile(u: dict) -> dict:
+    return {
+        "id": u["id"],
+        "username": u.get("username", ""),
+        "display_name": u.get("display_name") or u.get("name", ""),
+        "bio": u.get("bio", ""),
+        "is_public": u.get("is_public", True),
+        "selected_theme": u.get("selected_theme", "light"),
+        "level_data": xp_progress(u.get("xp", 0)),
+        "coin_balance": u.get("coin_balance", 0),
+        "created_at": u.get("created_at"),
+    }
+
 async def cleanup_expired_password_resets():
     while True:
         try:
@@ -340,6 +353,12 @@ class ForgotPasswordRequest(BaseModel):
 class ResetPasswordRequest(BaseModel):
     token: str
     new_password: str = Field(min_length=8, max_length=128)
+    
+class ProfileUpdateIn(BaseModel):
+    username: Optional[str] = Field(default=None, min_length=3, max_length=24)
+    display_name: Optional[str] = Field(default=None, max_length=80)
+    bio: Optional[str] = Field(default="", max_length=160)
+    is_public: Optional[bool] = True
 
 # ============== Auth Routes ==============
 
@@ -524,6 +543,74 @@ async def logout(response: Response):
 async def me(user: dict = Depends(get_current_user)):
     return clean_user(user)
 
+@api_router.get("/profile/me")
+async def get_my_profile(user: dict = Depends(get_current_user)):
+    return clean_profile(user)
+
+
+@api_router.put("/profile/me")
+async def update_my_profile(
+    body: ProfileUpdateIn,
+    user: dict = Depends(get_current_user),
+):
+    updates = {}
+
+    if body.username is not None:
+        username = body.username.lower().strip()
+
+        if not username.replace("_", "").isalnum():
+            raise HTTPException(
+                status_code=400,
+                detail="Username can only contain letters, numbers, and underscores",
+            )
+
+        existing = await db.users.find_one({
+            "username": username,
+            "id": {"$ne": user["id"]},
+        })
+
+        if existing:
+            raise HTTPException(
+                status_code=400,
+                detail="Username already taken",
+            )
+
+        updates["username"] = username
+
+    if body.display_name is not None:
+        updates["display_name"] = body.display_name.strip()
+
+    if body.bio is not None:
+        updates["bio"] = body.bio.strip()
+
+    if body.is_public is not None:
+        updates["is_public"] = body.is_public
+
+    if updates:
+        await db.users.update_one(
+            {"id": user["id"]},
+            {"$set": updates},
+        )
+
+    fresh = await db.users.find_one({"id": user["id"]}, {"_id": 0})
+
+    return clean_profile(fresh)
+
+
+@api_router.get("/profile/{username}")
+async def get_public_profile(username: str):
+    user = await db.users.find_one(
+        {"username": username.lower()},
+        {"_id": 0},
+    )
+
+    if not user:
+        raise HTTPException(status_code=404, detail="Profile not found")
+
+    if not user.get("is_public", True):
+        raise HTTPException(status_code=403, detail="Profile is private")
+
+    return clean_profile(user)
 
 @api_router.post("/auth/change-password")
 @limiter.limit("5/minute")
@@ -1720,6 +1807,7 @@ async def on_startup():
     await db.users.create_index("email", unique=True)
     await db.users.create_index("google_id", sparse=True)
     await db.users.create_index("apple_id", sparse=True)
+    await db.users.create_index("username", unique=True, sparse=True)
     await db.habits.create_index("user_id")
     await db.tasks.create_index("user_id")
     await db.rewards.create_index("user_id")

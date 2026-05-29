@@ -222,6 +222,48 @@ def create_reset_token() -> str:
 def now_utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
+async def create_activity(
+    user_id: str,
+    activity_type: str,
+    **payload,
+):
+    activity = {
+        "id": str(uuid.uuid4()),
+        "user_id": user_id,
+        "type": activity_type,
+        "created_at": now_utc_iso(),
+        **payload,
+    }
+
+    await db.activity_feed.insert_one(activity)
+
+    activity.pop("_id", None)
+
+    return activity
+
+async def create_achievement_activities(
+    user_id: str,
+    achievement_ids: list,
+):
+    for achievement_id in achievement_ids or []:
+        achievement = next(
+            (
+                item
+                for item in ACHIEVEMENT_DEFS
+                if item["id"] == achievement_id
+            ),
+            None,
+        )
+
+        if not achievement:
+            continue
+
+        await create_activity(
+            user_id,
+            "achievement_unlock",
+            achievement_id=achievement["id"],
+            achievement_name=achievement["name"],
+        )
 
 def today_str() -> str:
     return datetime.now(timezone.utc).date().isoformat()
@@ -1137,8 +1179,19 @@ async def complete_habit(habit_id: str, user: dict = Depends(get_current_user)):
         desc += f" (+{bonus} streak bonus)"
 
     await log_transaction(user["id"], coins, "earn", "habit", habit_id, desc)
+    await create_activity(
+    user["id"],
+    "habit_complete",
+    habit_name=habit["name"],
+    streak=new_streak,
+    coins=coins,
+    )
 
     newly_earned = await sync_user_achievements(db, user["id"])
+    await create_achievement_activities(
+    user["id"],
+    newly_earned,
+    )
     new_avatars = await sync_user_avatars(db, user["id"])
     updated = await db.habits.find_one({"id": habit_id}, {"_id": 0})
     updated["completed_today"] = True
@@ -1306,6 +1359,13 @@ async def complete_task(task_id: str, user: dict = Depends(get_current_user)):
         "task",
         task_id,
         f"Completed task: {task['name']}",
+    )
+
+    await create_activity(
+    user["id"],
+    "task_complete",
+    task_name=task["name"],
+    coins=coins,
     )
 
     next_task_id = await create_next_recurring_task_if_needed(
@@ -1492,6 +1552,10 @@ async def redeem_reward(reward_id: str, user: dict = Depends(get_current_user)):
     )
 
     newly_earned = await sync_user_achievements(db, user["id"])
+    await create_achievement_activities(
+    user["id"],
+    newly_earned,
+    )
     new_avatars = await sync_user_avatars(db, user["id"])
 
     return {
@@ -1692,8 +1756,20 @@ async def claim_quest(quest_id: str, user: dict = Depends(get_current_user)):
         quest_id,
         f"Quest reward: {quest['name']}",
     )
+    await create_activity(
+    uid,
+    "quest_complete",
+    quest_id=quest["id"],
+    quest_name=quest["name"],
+    coins=reward,
+    period=quest["period"],
+    )
 
     newly_earned = await sync_user_achievements(db, uid)
+    await create_achievement_activities(
+    user["id"],
+    newly_earned,
+    )
 
     return {
         "coins_earned": reward,

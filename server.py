@@ -218,21 +218,49 @@ async def clean_profile(u: dict) -> dict:
     metrics = await compute_user_metrics(db, uid)
 
     achievement_count = await db.user_achievements.count_documents({
-        "user_id": uid,
+    "user_id": uid,
     })
 
+    featured_achievement = None
+
+    earned = await db.user_achievements.find_one(
+    {"user_id": uid},
+    {"_id": 0},
+    sort=[("earned_at", -1)],
+    )
+
+    if earned:
+        achievement_id = earned.get("achievement_id")
+
+    achievement_def = next(
+        (
+            item
+            for item
+            in ACHIEVEMENT_DEFS
+            if item["id"] == achievement_id
+        ),
+        None,
+    )
+
+    if achievement_def:
+        featured_achievement = {
+            **achievement_def,
+            "earned_at": earned.get("earned_at"),
+        }
+
     return {
-        "id": u["id"],
-        "username": u.get("username", ""),
-        "display_name": u.get("display_name") or u.get("name", ""),
-        "bio": u.get("bio", ""),
-        "is_public": u.get("is_public", True),
-        "selected_theme": u.get("selected_theme", "light"),
-        "level_data": xp_progress(u.get("xp", 0)),
-        "coin_balance": u.get("coin_balance", 0),
-        "streak_days": metrics.get("current_max_streak", 0),
-        "achievement_count": achievement_count,
-        "created_at": u.get("created_at"),
+    "id": u["id"],
+    "username": u.get("username", ""),
+    "display_name": u.get("display_name") or u.get("name", ""),
+    "bio": u.get("bio", ""),
+    "is_public": u.get("is_public", True),
+    "selected_theme": u.get("selected_theme", "light"),
+    "level_data": xp_progress(u.get("xp", 0)),
+    "coin_balance": u.get("coin_balance", 0),
+    "streak_days": metrics.get("current_max_streak", 0),
+    "achievement_count": achievement_count,
+    "featured_achievement": featured_achievement,
+    "created_at": u.get("created_at"),
     }
 
 async def cleanup_expired_password_resets():

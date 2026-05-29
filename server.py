@@ -239,7 +239,6 @@ def coins_for(difficulty: Optional[str], custom_coins: Optional[int]) -> int:
     return 10
 
 
-
 def clean_user(u: dict) -> dict:
     xp = u.get("xp", 0)
 
@@ -255,6 +254,35 @@ def clean_user(u: dict) -> dict:
         "owned_themes": u.get("owned_themes", DEFAULT_THEMES),
         "created_at": u.get("created_at"),
     }
+async def sync_user_avatars(db, user_id: str):
+    user = await db.users.find_one({"id": user_id})
+    owned = user.get("owned_avatars", DEFAULT_AVATARS.copy())
+
+    earned_docs = await db.user_achievements.find(
+        {"user_id": user_id},
+        {"_id": 0, "achievement_id": 1},
+    ).to_list(200)
+
+    earned_ids = {doc["achievement_id"] for doc in earned_docs}
+    unlocked_now = []
+
+    for avatar_id, avatar in AVATAR_STORE.items():
+        if avatar.get("type") != "achievement":
+            continue
+
+        required = avatar.get("unlockAchievement")
+
+        if required in earned_ids and avatar_id not in owned:
+            owned.append(avatar_id)
+            unlocked_now.append(avatar)
+
+    if unlocked_now:
+        await db.users.update_one(
+            {"id": user_id},
+            {"$set": {"owned_avatars": owned}},
+        )
+
+    return unlocked_now
 
 async def clean_profile(u: dict) -> dict:
     uid = u["id"]
@@ -1105,7 +1133,7 @@ async def complete_habit(habit_id: str, user: dict = Depends(get_current_user)):
     await log_transaction(user["id"], coins, "earn", "habit", habit_id, desc)
 
     newly_earned = await sync_user_achievements(db, user["id"])
-
+    new_avatars = await sync_user_avatars(db, user["id"])
     updated = await db.habits.find_one({"id": habit_id}, {"_id": 0})
     updated["completed_today"] = True
     fresh_user = await db.users.find_one({"id": user["id"]}, {"_id": 0})
@@ -1122,6 +1150,7 @@ async def complete_habit(habit_id: str, user: dict = Depends(get_current_user)):
         "leveled_up": xp_data["leveled_up"],
         "old_level": xp_data["old_level"],
         "new_level": xp_data["new_level"],
+        "new_avatars": new_avatars,
         "new_achievements": newly_earned,
     }
 async def create_next_recurring_task_if_needed(task: dict, user_id: str):
@@ -1279,6 +1308,7 @@ async def complete_task(task_id: str, user: dict = Depends(get_current_user)):
 )
 
     newly_earned = await sync_user_achievements(db, user["id"])
+    new_avatars = await sync_user_avatars(db, user["id"])
     fresh_user = await db.users.find_one({"id": user["id"]}, {"_id": 0})
 
     return {
@@ -1291,6 +1321,7 @@ async def complete_task(task_id: str, user: dict = Depends(get_current_user)):
         "leveled_up": xp_data["leveled_up"],
         "old_level": xp_data["old_level"],
         "new_level": xp_data["new_level"],
+        "new_avatars": new_avatars,
         "new_achievements": newly_earned,
     }
 
@@ -1455,11 +1486,13 @@ async def redeem_reward(reward_id: str, user: dict = Depends(get_current_user)):
     )
 
     newly_earned = await sync_user_achievements(db, user["id"])
+    new_avatars = await sync_user_avatars(db, user["id"])
 
     return {
         "redemption": redemption,
         "new_balance": new_balance,
         "new_achievements": newly_earned,
+        "new_avatars": new_avatars,
     }
 
 

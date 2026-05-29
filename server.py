@@ -1900,6 +1900,19 @@ async def select_theme(
 
     return {"ok": True, "selected_theme": theme_id}
 
+@api_router.get("/activity")
+async def get_activity_feed(
+    user: dict = Depends(get_current_user),
+):
+    items = await db.activity_feed.find(
+        {"user_id": user["id"]},
+        {"_id": 0},
+    ).sort("created_at", -1).to_list(100)
+
+    return {
+        "items": items,
+    }
+
 
 @api_router.post("/themes/purchase")
 async def purchase_theme(
@@ -2080,7 +2093,9 @@ async def on_startup():
     await db.habits.create_index([("user_id", 1), ("created_at", -1)])
     await db.habits.create_index([("user_id", 1), ("last_completed_date", -1)])
     await db.habits.create_index([("user_id", 1), ("total_completions", -1)])
-
+    await db.activity_feed.create_index("user_id")
+    await db.activity_feed.create_index([("user_id", 1), ("created_at", -1)])
+    await db.activity_feed.create_index([("user_id", 1), ("type", 1)])
     await db.tasks.create_index([("user_id", 1), ("completed", 1)])
     await db.tasks.create_index([("user_id", 1), ("completed_at", -1)])
     await db.tasks.create_index([("user_id", 1), ("due_date", 1)])

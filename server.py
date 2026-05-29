@@ -212,7 +212,15 @@ def clean_user(u: dict) -> dict:
         "created_at": u.get("created_at"),
     }
 
-def clean_profile(u: dict) -> dict:
+async def clean_profile(u: dict) -> dict:
+    uid = u["id"]
+
+    metrics = await compute_user_metrics(db, uid)
+
+    achievement_count = await db.user_achievements.count_documents({
+        "user_id": uid,
+    })
+
     return {
         "id": u["id"],
         "username": u.get("username", ""),
@@ -222,6 +230,8 @@ def clean_profile(u: dict) -> dict:
         "selected_theme": u.get("selected_theme", "light"),
         "level_data": xp_progress(u.get("xp", 0)),
         "coin_balance": u.get("coin_balance", 0),
+        "streak_days": metrics.get("current_max_streak", 0),
+        "achievement_count": achievement_count,
         "created_at": u.get("created_at"),
     }
 
@@ -545,7 +555,7 @@ async def me(user: dict = Depends(get_current_user)):
 
 @api_router.get("/profile/me")
 async def get_my_profile(user: dict = Depends(get_current_user)):
-    return clean_profile(user)
+    return await clean_profile(user)
 
 
 @api_router.put("/profile/me")
@@ -594,7 +604,7 @@ async def update_my_profile(
 
     fresh = await db.users.find_one({"id": user["id"]}, {"_id": 0})
 
-    return clean_profile(fresh)
+    return await clean_profile(fresh)
 
 
 @api_router.get("/profile/{username}")
@@ -610,7 +620,7 @@ async def get_public_profile(username: str):
     if not user.get("is_public", True):
         raise HTTPException(status_code=403, detail="Profile is private")
 
-    return clean_profile(user)
+    return await clean_profile(user)
 
 @api_router.post("/auth/change-password")
 @limiter.limit("5/minute")

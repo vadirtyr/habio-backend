@@ -97,10 +97,54 @@ THEME_STORE = {
     "price": 0,
     "unlockLevel": 15,
 },
+}
 
+AVATAR_STORE = {
+    "explorer": {
+        "id": "explorer",
+        "name": "Explorer",
+        "icon": "account-circle-outline",
+        "type": "included",
+    },
+    "astronaut": {
+        "id": "astronaut",
+        "name": "Astronaut",
+        "icon": "account-hard-hat",
+        "type": "achievement",
+        "unlockAchievement": "streak-7",
+    },
+    "rocketPilot": {
+        "id": "rocketPilot",
+        "name": "Rocket Pilot",
+        "icon": "rocket-launch",
+        "type": "achievement",
+        "unlockAchievement": "tasks-50",
+    },
+    "planetKeeper": {
+        "id": "planetKeeper",
+        "name": "Planet Keeper",
+        "icon": "earth",
+        "type": "achievement",
+        "unlockAchievement": "habits-25",
+    },
+    "starCaptain": {
+        "id": "starCaptain",
+        "name": "Star Captain",
+        "icon": "shield-star-outline",
+        "type": "achievement",
+        "unlockAchievement": "coins-500",
+    },
+    "cosmicOwl": {
+        "id": "cosmicOwl",
+        "name": "Cosmic Owl",
+        "icon": "owl",
+        "type": "achievement",
+        "unlockAchievement": "quests-10",
+    },
 }
 
 DEFAULT_THEMES = ["light", "dark", "nature", "focus"]
+DEFAULT_AVATARS = ["explorer"]
 
 MONGO_URL = os.environ.get("MONGO_URL")
 DB_NAME = os.environ.get("DB_NAME")
@@ -247,6 +291,32 @@ async def clean_profile(u: dict) -> dict:
             **achievement_def,
             "earned_at": earned.get("earned_at"),
         }
+    owned_avatars = u.get("owned_avatars", DEFAULT_AVATARS.copy())
+
+    earned_docs = await db.user_achievements.find(
+    {"user_id": uid},
+    {"_id": 0, "achievement_id": 1},
+    ).to_list(200)
+
+    earned_ids = {doc["achievement_id"] for doc in earned_docs}
+
+    unlocked_now = []
+
+    for avatar_id, avatar in AVATAR_STORE.items():
+        if avatar.get("type") != "achievement":
+            continue
+
+        required = avatar.get("unlockAchievement")
+
+        if required in earned_ids and avatar_id not in owned_avatars:
+            owned_avatars.append(avatar_id)
+            unlocked_now.append(avatar_id)
+
+    if unlocked_now:
+        await db.users.update_one(
+            {"id": uid},
+            {"$set": {"owned_avatars": owned_avatars}},
+        )
 
     return {
     "id": u["id"],
@@ -260,6 +330,9 @@ async def clean_profile(u: dict) -> dict:
     "streak_days": metrics.get("current_max_streak", 0),
     "achievement_count": achievement_count,
     "featured_achievement": featured_achievement,
+    "avatar": u.get("avatar", "explorer"),
+    "owned_avatars": owned_avatars,
+    "avatar_store": list(AVATAR_STORE.values()),
     "created_at": u.get("created_at"),
     }
 
@@ -397,6 +470,7 @@ class ProfileUpdateIn(BaseModel):
     display_name: Optional[str] = Field(default=None, max_length=80)
     bio: Optional[str] = Field(default="", max_length=160)
     is_public: Optional[bool] = True
+    avatar: Optional[str] = "explorer"
 
 # ============== Auth Routes ==============
 
@@ -425,6 +499,8 @@ async def register(
         "name": body.name or email.split("@")[0],
         "coin_balance": 0,
         "xp": 0,
+        "avatar": "explorer",
+        "owned_avatars": DEFAULT_AVATARS.copy(),
         "selected_theme": "light",
         "owned_themes": DEFAULT_THEMES.copy(),
         "created_at": now_utc_iso(),
@@ -542,6 +618,8 @@ async def google_auth(
             "name": payload.get("name", email.split("@")[0]),
             "coin_balance": 0,
             "xp": 0,
+            "avatar": "explorer",
+            "owned_avatars": DEFAULT_AVATARS.copy(),
             "selected_theme": "light",
             "owned_themes": DEFAULT_THEMES.copy(),
             "created_at": now_utc_iso(),
@@ -1898,6 +1976,8 @@ async def on_startup():
             "email": admin_email,
             "password_hash": hash_password(admin_password),
             "name": "Admin",
+            "avatar": "explorer",
+            "owned_avatars": DEFAULT_AVATARS.copy(),
             "coin_balance": 0,
             "xp": 0,
             "selected_theme": "light",

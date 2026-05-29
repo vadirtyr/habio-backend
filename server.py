@@ -315,6 +315,13 @@ async def sync_user_avatars(db, user_id: str):
             owned.append(avatar_id)
             unlocked_now.append(avatar)
 
+    await create_activity(
+        user_id,
+        "avatar_unlock",
+        avatar_id=avatar_id,
+        avatar_name=avatar["name"],
+    )
+
     if unlocked_now:
         await db.users.update_one(
             {"id": user_id},
@@ -1162,6 +1169,14 @@ async def complete_habit(habit_id: str, user: dict = Depends(get_current_user)):
         },
     )
 
+    if xp_data["leveled_up"]:
+        await create_activity(
+        user["id"],
+        "level_up",
+        level=xp_data["new_level"],
+        old_level=xp_data["old_level"],
+    )
+
     new_balance = user.get("coin_balance", 0) + coins
 
     await db.users.update_one(
@@ -1339,7 +1354,13 @@ async def complete_task(task_id: str, user: dict = Depends(get_current_user)):
         {"id": task_id},
         {"$set": {"completed": True, "completed_at": now_utc_iso()}},
     )
-
+    if xp_data["leveled_up"]:
+        await create_activity(
+        user["id"],
+        "level_up",
+        level=xp_data["new_level"],
+        old_level=xp_data["old_level"],
+    )
     new_balance = user.get("coin_balance", 0) + coins
 
     await db.users.update_one(
@@ -1739,6 +1760,14 @@ async def claim_quest(quest_id: str, user: dict = Depends(get_current_user)):
                 "xp": xp_data["new_xp"],
             }
         },
+    )
+
+    if xp_data["leveled_up"]:
+        await create_activity(
+        uid,
+        "level_up",
+        level=xp_data["new_level"],
+        old_level=xp_data["old_level"],
     )
 
     await db.quest_claims.insert_one({

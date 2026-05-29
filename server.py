@@ -1766,10 +1766,13 @@ async def claim_quest(quest_id: str, user: dict = Depends(get_current_user)):
     )
 
     newly_earned = await sync_user_achievements(db, uid)
+
     await create_achievement_activities(
-    user["id"],
+    uid,
     newly_earned,
-    )
+)
+
+    new_avatars = await sync_user_avatars(db, uid)
 
     return {
         "coins_earned": reward,
@@ -1780,6 +1783,7 @@ async def claim_quest(quest_id: str, user: dict = Depends(get_current_user)):
         "leveled_up": xp_data["leveled_up"],
         "old_level": xp_data["old_level"],
         "new_level": xp_data["new_level"],
+        "new_avatars": new_avatars,
         "new_achievements": newly_earned,
     }
 

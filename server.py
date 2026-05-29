@@ -103,7 +103,7 @@ AVATAR_STORE = {
     "explorer": {
         "id": "explorer",
         "name": "Explorer",
-        "icon": "account-circle-outline",
+        "icon": "compass-outline",
         "type": "included",
     },
     "astronaut": {

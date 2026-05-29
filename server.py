@@ -290,6 +290,13 @@ async def clean_profile(u: dict) -> dict:
     "user_id": uid,
     })
 
+    followers_count = await db.follows.count_documents({
+    "following_id": uid,
+    })
+
+    following_count = await db.follows.count_documents({
+    "follower_id": uid,
+    })
     featured_achievement = None
 
     earned = await db.user_achievements.find_one(
@@ -357,6 +364,8 @@ async def clean_profile(u: dict) -> dict:
     "featured_achievement": featured_achievement,
     "avatar": u.get("avatar", "explorer"),
     "owned_avatars": owned_avatars,
+    "followers_count": followers_count,
+    "following_count": following_count,
     "avatar_store": list(AVATAR_STORE.values()),
     "created_at": u.get("created_at"),
     }

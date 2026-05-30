@@ -11,6 +11,7 @@ import bcrypt
 import jwt
 import secrets
 import asyncio
+import re
 
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response
 from starlette.middleware.cors import CORSMiddleware
@@ -285,24 +286,48 @@ def clean_user(u: dict) -> dict:
         "id": u["id"],
         "email": u["email"],
         "name": u.get("name", ""),
+        "username": u.get("username", ""),
+        "display_name": u.get("display_name") or u.get("name", ""),
+        "bio": u.get("bio", ""),
+        "is_public": u.get("is_public", True),
+        "avatar": u.get("avatar", "explorer"),
+        "owned_avatars": u.get(
+            "owned_avatars",
+            DEFAULT_AVATARS.copy(),
+        ),
+        "followers_count": len(u.get("followers", [])),
+        "following_count": len(u.get("following", [])),
         "auth_providers": u.get("auth_providers", ["password"]),
         "coin_balance": u.get("coin_balance", 0),
         "xp": xp,
         "level_data": xp_progress(xp),
         "selected_theme": u.get("selected_theme", "light"),
-        "owned_themes": u.get("owned_themes", DEFAULT_THEMES),
+        "owned_themes": u.get("owned_themes", DEFAULT_THEMES.copy()),
         "created_at": u.get("created_at"),
     }
+
+
 async def sync_user_avatars(db, user_id: str):
     user = await db.users.find_one({"id": user_id})
-    owned = user.get("owned_avatars", DEFAULT_AVATARS.copy())
+
+    if not user:
+        return []
+
+    owned = user.get(
+        "owned_avatars",
+        DEFAULT_AVATARS.copy(),
+    )
 
     earned_docs = await db.user_achievements.find(
         {"user_id": user_id},
         {"_id": 0, "achievement_id": 1},
     ).to_list(200)
 
-    earned_ids = {doc["achievement_id"] for doc in earned_docs}
+    earned_ids = {
+        doc["achievement_id"]
+        for doc in earned_docs
+    }
+
     unlocked_now = []
 
     for avatar_id, avatar in AVATAR_STORE.items():
@@ -311,48 +336,63 @@ async def sync_user_avatars(db, user_id: str):
 
         required = avatar.get("unlockAchievement")
 
-        if required in earned_ids and avatar_id not in owned:
+        if (
+            required in earned_ids
+            and avatar_id not in owned
+        ):
             owned.append(avatar_id)
             unlocked_now.append(avatar)
 
-    await create_activity(
-        user_id,
-        "avatar_unlock",
-        avatar_id=avatar_id,
-        avatar_name=avatar["name"],
-    )
+            await create_activity(
+                user_id,
+                "avatar_unlock",
+                avatar_id=avatar_id,
+                avatar_name=avatar["name"],
+            )
 
     if unlocked_now:
         await db.users.update_one(
             {"id": user_id},
-            {"$set": {"owned_avatars": owned}},
+            {
+                "$set": {
+                    "owned_avatars": owned,
+                }
+            },
         )
 
     return unlocked_now
 
+
 async def clean_profile(u: dict) -> dict:
     uid = u["id"]
+
+    await sync_user_avatars(db, uid)
+
+    fresh = await db.users.find_one(
+        {"id": uid},
+        {"_id": 0},
+    )
+
+    if fresh:
+        u = fresh
 
     metrics = await compute_user_metrics(db, uid)
 
     achievement_count = await db.user_achievements.count_documents({
-    "user_id": uid,
+        "user_id": uid,
     })
 
-    followers_count = await db.follows.count_documents({
-    "following_id": uid,
-    })
-
-    following_count = await db.follows.count_documents({
-    "follower_id": uid,
-    })
+    followers_count = len(u.get("followers", []))
+    following_count = len(u.get("following", []))
     featured_achievement = None
 
     earned = await db.user_achievements.find_one(
-    {"user_id": uid},
-    {"_id": 0},
-    sort=[("earned_at", -1)],
+        {"user_id": uid},
+        {"_id": 0},
+        sort=[("earned_at", -1)],
     )
+
+    achievement_id = None
 
     if earned:
         achievement_id = earned.get("achievement_id")
@@ -360,8 +400,7 @@ async def clean_profile(u: dict) -> dict:
     achievement_def = next(
         (
             item
-            for item
-            in ACHIEVEMENT_DEFS
+            for item in ACHIEVEMENT_DEFS
             if item["id"] == achievement_id
         ),
         None,
@@ -372,52 +411,32 @@ async def clean_profile(u: dict) -> dict:
             **achievement_def,
             "earned_at": earned.get("earned_at"),
         }
-    owned_avatars = u.get("owned_avatars", DEFAULT_AVATARS.copy())
 
-    earned_docs = await db.user_achievements.find(
-    {"user_id": uid},
-    {"_id": 0, "achievement_id": 1},
-    ).to_list(200)
-
-    earned_ids = {doc["achievement_id"] for doc in earned_docs}
-
-    unlocked_now = []
-
-    for avatar_id, avatar in AVATAR_STORE.items():
-        if avatar.get("type") != "achievement":
-            continue
-
-        required = avatar.get("unlockAchievement")
-
-        if required in earned_ids and avatar_id not in owned_avatars:
-            owned_avatars.append(avatar_id)
-            unlocked_now.append(avatar_id)
-
-    if unlocked_now:
-        await db.users.update_one(
-            {"id": uid},
-            {"$set": {"owned_avatars": owned_avatars}},
-        )
+    owned_avatars = u.get(
+        "owned_avatars",
+        DEFAULT_AVATARS.copy(),
+    )
 
     return {
-    "id": u["id"],
-    "username": u.get("username", ""),
-    "display_name": u.get("display_name") or u.get("name", ""),
-    "bio": u.get("bio", ""),
-    "is_public": u.get("is_public", True),
-    "selected_theme": u.get("selected_theme", "light"),
-    "level_data": xp_progress(u.get("xp", 0)),
-    "coin_balance": u.get("coin_balance", 0),
-    "streak_days": metrics.get("current_max_streak", 0),
-    "achievement_count": achievement_count,
-    "featured_achievement": featured_achievement,
-    "avatar": u.get("avatar", "explorer"),
-    "owned_avatars": owned_avatars,
-    "followers_count": followers_count,
-    "following_count": following_count,
-    "avatar_store": list(AVATAR_STORE.values()),
-    "created_at": u.get("created_at"),
+        "id": u["id"],
+        "username": u.get("username", ""),
+        "display_name": u.get("display_name") or u.get("name", ""),
+        "bio": u.get("bio", ""),
+        "is_public": u.get("is_public", True),
+        "selected_theme": u.get("selected_theme", "light"),
+        "level_data": xp_progress(u.get("xp", 0)),
+        "coin_balance": u.get("coin_balance", 0),
+        "streak_days": metrics.get("current_max_streak", 0),
+        "achievement_count": achievement_count,
+        "featured_achievement": featured_achievement,
+        "avatar": u.get("avatar", "explorer"),
+        "owned_avatars": owned_avatars,
+        "followers_count": followers_count,
+        "following_count": following_count,
+        "avatar_store": list(AVATAR_STORE.values()),
+        "created_at": u.get("created_at"),
     }
+
 
 async def cleanup_expired_password_resets():
     while True:
@@ -549,11 +568,11 @@ class ResetPasswordRequest(BaseModel):
     new_password: str = Field(min_length=8, max_length=128)
     
 class ProfileUpdateIn(BaseModel):
-    username: Optional[str] = Field(default=None, min_length=3, max_length=24)
-    display_name: Optional[str] = Field(default=None, max_length=80)
-    bio: Optional[str] = Field(default="", max_length=160)
-    is_public: Optional[bool] = True
-    avatar: Optional[str] = "explorer"
+    username: Optional[str] = None
+    display_name: Optional[str] = None
+    bio: Optional[str] = None
+    is_public: Optional[bool] = None
+    avatar: Optional[str] = None
 
 # ============== Auth Routes ==============
 
@@ -580,6 +599,10 @@ async def register(
         "email": email,
         "password_hash": hash_password(body.password),
         "name": body.name or email.split("@")[0],
+        "username": "",
+        "display_name": body.name or "",
+        "bio": "",
+        "is_public": True,
         "followers": [],
         "following": [],
         "coin_balance": 0,
@@ -703,6 +726,10 @@ async def google_auth(
             "following": [],
             "auth_providers": ["google"],
             "name": payload.get("name", email.split("@")[0]),
+            "username": "",
+            "display_name": payload.get("name", ""),
+            "bio": "",
+            "is_public": True,
             "coin_balance": 0,
             "xp": 0,
             "avatar": "explorer",
@@ -761,6 +788,34 @@ async def update_my_profile(
     if body.username is not None:
         username = body.username.lower().strip()
 
+        reserved_usernames = {
+            "admin",
+            "administrator",
+            "support",
+            "ourorbit",
+            "system",
+            "moderator",
+            "staff",
+        }
+
+        if len(username) < 3:
+            raise HTTPException(
+                status_code=400,
+                detail="Username must be at least 3 characters",
+            )
+
+        if len(username) > 24:
+            raise HTTPException(
+                status_code=400,
+                detail="Username must be 24 characters or fewer",
+            )
+
+        if username in reserved_usernames:
+            raise HTTPException(
+                status_code=400,
+                detail="Username is reserved",
+            )
+
         if not username.replace("_", "").isalnum():
             raise HTTPException(
                 status_code=400,
@@ -783,6 +838,18 @@ async def update_my_profile(
     if body.display_name is not None:
         updates["display_name"] = body.display_name.strip()
 
+    if body.avatar is not None:
+        if body.avatar not in user.get(
+            "owned_avatars",
+            DEFAULT_AVATARS.copy(),
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="Avatar not owned",
+            )
+
+        updates["avatar"] = body.avatar
+
     if body.bio is not None:
         updates["bio"] = body.bio.strip()
 
@@ -795,7 +862,10 @@ async def update_my_profile(
             {"$set": updates},
         )
 
-    fresh = await db.users.find_one({"id": user["id"]}, {"_id": 0})
+    fresh = await db.users.find_one(
+        {"id": user["id"]},
+        {"_id": 0},
+    )
 
     return await clean_profile(fresh)
 
@@ -814,6 +884,259 @@ async def get_public_profile(username: str):
         raise HTTPException(status_code=403, detail="Profile is private")
 
     return await clean_profile(user)
+
+@api_router.get("/users/search")
+async def search_users(
+    q: str,
+):
+    query = q.strip()
+
+    if len(query) < 2:
+        return []
+
+    escaped_query = re.escape(query)
+
+    users = await db.users.find(
+        {
+            "is_public": True,
+            "username": {
+                "$exists": True,
+                "$ne": "",
+            },
+            "$or": [
+                {
+                    "username": {
+                        "$regex": escaped_query,
+                        "$options": "i",
+                    }
+                },
+                {
+                    "display_name": {
+                        "$regex": escaped_query,
+                        "$options": "i",
+                    }
+                },
+                {
+                    "name": {
+                        "$regex": escaped_query,
+                        "$options": "i",
+                    }
+                },
+            ],
+        },
+        {
+            "_id": 0,
+            "id": 1,
+            "username": 1,
+            "display_name": 1,
+            "name": 1,
+            "avatar": 1,
+        },
+    ).limit(20).to_list(20)
+
+    return users
+
+
+@api_router.post("/users/{target_id}/follow")
+async def follow_user(
+    target_id: str,
+    user: dict = Depends(get_current_user),
+):
+    if target_id == user["id"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot follow yourself",
+        )
+
+    target = await db.users.find_one({"id": target_id})
+
+    if not target:
+        raise HTTPException(
+            status_code=404,
+            detail="User not found",
+        )
+
+    if not target.get("is_public", True):
+        raise HTTPException(
+            status_code=403,
+            detail="This profile is private",
+        )
+
+    await db.users.update_one(
+        {"id": user["id"]},
+        {
+            "$addToSet": {
+                "following": target_id,
+            }
+        },
+    )
+
+    await db.users.update_one(
+        {"id": target_id},
+        {
+            "$addToSet": {
+                "followers": user["id"],
+            }
+        },
+    )
+
+    await create_activity(
+        user["id"],
+        "follow_user",
+        target_user_id=target_id,
+        target_username=target.get("username", ""),
+        target_display_name=target.get("display_name") or target.get("name", ""),
+    )
+
+    return {"ok": True}
+
+
+@api_router.post("/users/{target_id}/unfollow")
+async def unfollow_user(
+    target_id: str,
+    user: dict = Depends(get_current_user),
+):
+    await db.users.update_one(
+        {"id": user["id"]},
+        {
+            "$pull": {
+                "following": target_id,
+            }
+        },
+    )
+
+    await db.users.update_one(
+        {"id": target_id},
+        {
+            "$pull": {
+                "followers": user["id"],
+            }
+        },
+    )
+
+    return {"ok": True}
+
+
+@api_router.get("/users/{target_id}/followers")
+async def get_followers(
+    target_id: str,
+    user: dict = Depends(get_current_user),
+):
+    target = await db.users.find_one({"id": target_id})
+
+    if not target:
+        raise HTTPException(
+            status_code=404,
+            detail="User not found",
+        )
+
+    if (
+        not target.get("is_public", True)
+        and target["id"] != user["id"]
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Profile is private",
+        )
+
+    follower_ids = target.get("followers", [])
+
+    followers = await db.users.find(
+        {
+            "id": {
+                "$in": follower_ids,
+            }
+        },
+        {
+            "_id": 0,
+            "id": 1,
+            "username": 1,
+            "display_name": 1,
+            "name": 1,
+            "avatar": 1,
+        },
+    ).sort("username", 1).to_list(500)
+
+    return {
+        "count": len(followers),
+        "followers": followers,
+    }
+
+
+@api_router.get("/users/{target_id}/following")
+async def get_following(
+    target_id: str,
+    user: dict = Depends(get_current_user),
+):
+    target = await db.users.find_one({"id": target_id})
+
+    if not target:
+        raise HTTPException(
+            status_code=404,
+            detail="User not found",
+        )
+
+    if (
+        not target.get("is_public", True)
+        and target["id"] != user["id"]
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Profile is private",
+        )
+
+    following_ids = target.get("following", [])
+
+    following = await db.users.find(
+        {
+            "id": {
+                "$in": following_ids,
+            }
+        },
+        {
+            "_id": 0,
+            "id": 1,
+            "username": 1,
+            "display_name": 1,
+            "name": 1,
+            "avatar": 1,
+        },
+    ).sort("username", 1).to_list(500)
+
+    return {
+        "count": len(following),
+        "following": following,
+    }
+
+
+@api_router.get("/users/{target_id}/activity")
+async def get_public_activity(
+    target_id: str,
+):
+    target = await db.users.find_one(
+        {"id": target_id},
+        {"_id": 0},
+    )
+
+    if not target:
+        raise HTTPException(
+            status_code=404,
+            detail="User not found",
+        )
+
+    if not target.get("is_public", True):
+        raise HTTPException(
+            status_code=403,
+            detail="Profile is private",
+        )
+
+    items = await db.activity_feed.find(
+        {"user_id": target_id},
+        {"_id": 0},
+    ).sort("created_at", -1).to_list(50)
+
+    return {"items": items}
+
 
 @api_router.post("/auth/change-password")
 @limiter.limit("5/minute")
@@ -993,9 +1316,17 @@ async def delete_account(
     await db.transactions.delete_many({"user_id": uid})
     await db.user_achievements.delete_many({"user_id": uid})
     await db.quest_claims.delete_many({"user_id": uid})
+  
+    await db.users.update_many(
+    {},
+    {
+        "$pull": {
+            "followers": uid,
+            "following": uid,
+        }
+    },
+    )    
     await db.users.delete_one({"id": uid})
-    
-
     response.delete_cookie("access_token", path="/")
 
     return {"ok": True, "message": "Account deleted successfully"}
@@ -1402,6 +1733,10 @@ async def complete_task(task_id: str, user: dict = Depends(get_current_user)):
 )
 
     newly_earned = await sync_user_achievements(db, user["id"])
+    await create_achievement_activities(
+    user["id"],
+    newly_earned,
+    )
     new_avatars = await sync_user_avatars(db, user["id"])
     fresh_user = await db.users.find_one({"id": user["id"]}, {"_id": 0})
 
@@ -2092,6 +2427,7 @@ async def on_startup():
     await db.users.create_index("google_id", sparse=True)
     await db.users.create_index("apple_id", sparse=True)
     await db.users.create_index("username", unique=True, sparse=True)
+    await db.users.create_index("display_name")
     await db.habits.create_index("user_id")
     await db.tasks.create_index("user_id")
     await db.rewards.create_index("user_id")
@@ -2134,22 +2470,45 @@ async def on_startup():
     [("expires_at", 1)],
 )
     await db.users.update_many(
-    {
-        "followers": {"$exists": False}
-    },
-    {
-        "$set": {"followers": []}
-    },
+    {"followers": {"$exists": False}},
+    {"$set": {"followers": []}},
 )
 
     await db.users.update_many(
-    {
-        "following": {"$exists": False}
-    },
-    {
-        "$set": {"following": []}
-    },
+    {"following": {"$exists": False}},
+    {"$set": {"following": []}},
 )
+
+    await db.users.update_many(
+        {"username": {"$exists": False}},
+        {"$set": {"username": ""}},
+    )
+
+    await db.users.update_many(
+        {"display_name": {"$exists": False}},
+        [{"$set": {"display_name": {"$ifNull": ["$name", ""]}}}],
+    )
+
+    await db.users.update_many(
+        {"bio": {"$exists": False}},
+        {"$set": {"bio": ""}},
+    )
+
+    await db.users.update_many(
+        {"is_public": {"$exists": False}},
+        {"$set": {"is_public": True}},
+    )
+
+    await db.users.update_many(
+        {"avatar": {"$exists": False}},
+        {"$set": {"avatar": "explorer"}},
+    )
+
+    await db.users.update_many(
+        {"owned_avatars": {"$exists": False}},
+        {"$set": {"owned_avatars": DEFAULT_AVATARS.copy()}},
+    )
+
     asyncio.create_task(cleanup_expired_password_resets())
     admin_email = os.environ.get("ADMIN_EMAIL", "admin@example.com").lower()
     admin_password = os.environ.get("ADMIN_PASSWORD", "admin123")
@@ -2164,6 +2523,10 @@ async def on_startup():
             "following": [],
             "password_hash": hash_password(admin_password),
             "name": "Admin",
+            "username": "",
+            "display_name": "Admin",
+            "bio": "",
+            "is_public": True,
             "avatar": "explorer",
             "owned_avatars": DEFAULT_AVATARS.copy(),
             "coin_balance": 0,

@@ -580,6 +580,8 @@ async def register(
         "email": email,
         "password_hash": hash_password(body.password),
         "name": body.name or email.split("@")[0],
+        "followers": [],
+        "following": [],
         "coin_balance": 0,
         "xp": 0,
         "avatar": "explorer",
@@ -697,6 +699,8 @@ async def google_auth(
             "email": email,
             "password_hash": None,
             "google_id": google_id,
+            "followers": [],
+            "following": [],
             "auth_providers": ["google"],
             "name": payload.get("name", email.split("@")[0]),
             "coin_balance": 0,
@@ -2129,7 +2133,23 @@ async def on_startup():
     await db.password_resets.create_index(
     [("expires_at", 1)],
 )
+    await db.users.update_many(
+    {
+        "followers": {"$exists": False}
+    },
+    {
+        "$set": {"followers": []}
+    },
+)
 
+    await db.users.update_many(
+    {
+        "following": {"$exists": False}
+    },
+    {
+        "$set": {"following": []}
+    },
+)
     asyncio.create_task(cleanup_expired_password_resets())
     admin_email = os.environ.get("ADMIN_EMAIL", "admin@example.com").lower()
     admin_password = os.environ.get("ADMIN_PASSWORD", "admin123")
@@ -2140,6 +2160,8 @@ async def on_startup():
         await db.users.insert_one({
             "id": str(uuid.uuid4()),
             "email": admin_email,
+            "followers": [],
+            "following": [],
             "password_hash": hash_password(admin_password),
             "name": "Admin",
             "avatar": "explorer",

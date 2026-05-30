@@ -599,7 +599,6 @@ async def register(
         "email": email,
         "password_hash": hash_password(body.password),
         "name": body.name or email.split("@")[0],
-        "username": "",
         "display_name": body.name or "",
         "bio": "",
         "is_public": True,
@@ -726,7 +725,6 @@ async def google_auth(
             "following": [],
             "auth_providers": ["google"],
             "name": payload.get("name", email.split("@")[0]),
-            "username": "",
             "display_name": payload.get("name", ""),
             "bio": "",
             "is_public": True,
@@ -2480,9 +2478,9 @@ async def on_startup():
 )
 
     await db.users.update_many(
-        {"username": {"$exists": False}},
-        {"$set": {"username": ""}},
-    )
+    {"username": {"$exists": False}},
+    {"$unset": {"username": ""}},
+)
 
     await db.users.update_many(
         {"display_name": {"$exists": False}},
@@ -2523,7 +2521,6 @@ async def on_startup():
             "following": [],
             "password_hash": hash_password(admin_password),
             "name": "Admin",
-            "username": "",
             "display_name": "Admin",
             "bio": "",
             "is_public": True,

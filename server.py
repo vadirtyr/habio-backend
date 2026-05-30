@@ -229,11 +229,15 @@ async def create_activity(
     **payload,
 ):
     activity = {
-        "id": str(uuid.uuid4()),
-        "user_id": user_id,
-        "type": activity_type,
-        "created_at": now_utc_iso(),
-        **payload,
+    "id": str(uuid4()),
+    "user_id": user_id,
+    "username": profile.get("username"),
+    "display_name": profile.get("display_name"),
+    "avatar": profile.get("avatar"),
+    "type": activity_type,
+    "created_at": datetime.now(
+        timezone.utc
+    ).isoformat(),
     }
 
     await db.activity_feed.insert_one(activity)
@@ -2253,6 +2257,30 @@ async def get_activity_feed(
         "items": items,
     }
 
+@api_router.get("/feed")
+async def get_social_feed(
+    user: dict = Depends(get_current_user),
+):
+    following_ids = user.get("following", [])
+
+    if not following_ids:
+        return {"items": []}
+
+    items = await db.activity_feed.find(
+        {
+            "user_id": {
+                "$in": following_ids
+            }
+        },
+        {"_id": 0},
+    ).sort(
+        "created_at",
+        -1,
+    ).to_list(100)
+
+    return {
+        "items": items
+    }
 
 @api_router.post("/themes/purchase")
 async def purchase_theme(

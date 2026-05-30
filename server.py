@@ -984,6 +984,7 @@ async def delete_account(
     await db.habits.delete_many({"user_id": uid})
     await db.tasks.delete_many({"user_id": uid})
     await db.rewards.delete_many({"user_id": uid})
+    await db.activity_feed.delete_many({"user_id": uid})
     await db.redemptions.delete_many({"user_id": uid})
     await db.transactions.delete_many({"user_id": uid})
     await db.user_achievements.delete_many({"user_id": uid})
@@ -1007,7 +1008,7 @@ async def reset_account_data(
     await db.transactions.delete_many({"user_id": uid})
     await db.user_achievements.delete_many({"user_id": uid})
     await db.quest_claims.delete_many({"user_id": uid})
-
+    await db.activity_feed.delete_many({"user_id": uid})
     await db.users.update_one(
         {"id": uid},
         {
@@ -1016,7 +1017,9 @@ async def reset_account_data(
                 "xp": 0,
                 "selected_theme": "light",
                 "owned_themes": DEFAULT_THEMES.copy(),
-            }
+                "avatar": "explorer",
+                "owned_avatars": DEFAULT_AVATARS.copy(),
+}
         },
     )
 

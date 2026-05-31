@@ -254,6 +254,60 @@ async def create_activity(
     activity.pop("_id", None)
 
     return activity
+
+async def attach_reaction_summaries(
+    items: list,
+    user_id: Optional[str] = None,
+):
+    activity_ids = [
+        item.get("id")
+        for item in items
+        if item.get("id")
+    ]
+
+    if not activity_ids:
+        return items
+
+    reactions = await db.activity_reactions.find(
+        {
+            "activity_id": {
+                "$in": activity_ids,
+            }
+        },
+        {"_id": 0},
+    ).to_list(1000)
+
+    summary = {}
+
+    for reaction in reactions:
+        activity_id = reaction["activity_id"]
+        reaction_type = reaction["reaction"]
+
+        if activity_id not in summary:
+            summary[activity_id] = {
+                "like": 0,
+                "cheer": 0,
+                "viewer_reactions": [],
+            }
+
+        if reaction_type in ("like", "cheer"):
+            summary[activity_id][reaction_type] += 1
+
+        if user_id and reaction["user_id"] == user_id:
+            summary[activity_id]["viewer_reactions"].append(reaction_type)
+
+    for item in items:
+        item["reactions"] = summary.get(
+            item.get("id"),
+            {
+                "like": 0,
+                "cheer": 0,
+                "viewer_reactions": [],
+            },
+        )
+
+    return items
+
 async def create_achievement_activities(
     user_id: str,
     achievement_ids: list,
@@ -586,6 +640,9 @@ class ProfileUpdateIn(BaseModel):
     is_public: Optional[bool] = None
     avatar: Optional[str] = None
 
+class ActivityReactionIn(BaseModel):
+    reaction: Literal["like", "cheer"]
+
 # ============== Auth Routes ==============
 
 @api_router.post("/auth/register")
@@ -802,8 +859,75 @@ async def get_social_feed(
         {"_id": 0},
     ).sort("created_at", -1).to_list(100)
 
+    items = await attach_reaction_summaries(
+    items,
+    user["id"],
+    )
+
     return {
-        "items": items,
+    "items": items,
+    }
+
+@api_router.post("/activity/{activity_id}/react")
+async def react_to_activity(
+    activity_id: str,
+    body: ActivityReactionIn,
+    user: dict = Depends(get_current_user),
+):
+    activity = await db.activity_feed.find_one(
+        {"id": activity_id},
+        {"_id": 0},
+    )
+
+    if not activity:
+        raise HTTPException(
+            status_code=404,
+            detail="Activity not found",
+        )
+
+    reaction_doc = {
+        "id": str(uuid.uuid4()),
+        "activity_id": activity_id,
+        "user_id": user["id"],
+        "reaction": body.reaction,
+        "created_at": now_utc_iso(),
+    }
+
+    await db.activity_reactions.update_one(
+        {
+            "activity_id": activity_id,
+            "user_id": user["id"],
+            "reaction": body.reaction,
+        },
+        {
+            "$setOnInsert": reaction_doc,
+        },
+        upsert=True,
+    )
+
+    return {
+        "ok": True,
+        "reaction": body.reaction,
+    }
+
+
+@api_router.delete("/activity/{activity_id}/react/{reaction}")
+async def remove_activity_reaction(
+    activity_id: str,
+    reaction: Literal["like", "cheer"],
+    user: dict = Depends(get_current_user),
+):
+    await db.activity_reactions.delete_one(
+        {
+            "activity_id": activity_id,
+            "user_id": user["id"],
+            "reaction": reaction,
+        }
+    )
+
+    return {
+        "ok": True,
+        "reaction": reaction,
     }
 
 @api_router.get("/profile/me")
@@ -1145,7 +1269,8 @@ async def get_following(
 @api_router.get("/users/{target_id}/activity")
 async def get_public_activity(
     target_id: str,
-):
+    user: dict = Depends(get_current_user),
+    ):
     target = await db.users.find_one(
         {"id": target_id},
         {"_id": 0},
@@ -1168,8 +1293,12 @@ async def get_public_activity(
         {"_id": 0},
     ).sort("created_at", -1).to_list(50)
 
-    return {"items": items}
+    items = await attach_reaction_summaries(
+    items,
+    user["id"],
+    )
 
+    return {"items": items}
 
 @api_router.post("/auth/change-password")
 @limiter.limit("5/minute")
@@ -2284,8 +2413,13 @@ async def get_activity_feed(
         {"_id": 0},
     ).sort("created_at", -1).to_list(100)
 
+    items = await attach_reaction_summaries(
+    items,
+    user["id"],
+    )
+
     return {
-        "items": items,
+    "items": items,
     }
 
 @api_router.get("/feed")

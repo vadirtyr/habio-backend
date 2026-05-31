@@ -11,6 +11,7 @@ NOTIFICATION_TYPES = {
     "reward_unlocked",
     "like_received",
     "cheer_received",
+    "weekly_recap",
 }
 
 
@@ -29,9 +30,6 @@ async def create_notification(
     if not user_id or not actor_id:
         return None
 
-    if user_id == actor_id:
-        return None
-
     if notification_type not in NOTIFICATION_TYPES:
         return None
 
@@ -47,7 +45,9 @@ async def create_notification(
     }
 
     await db.notifications.insert_one(notification)
+
     notification.pop("_id", None)
+
     return notification
 
 
@@ -58,14 +58,22 @@ async def notify_followers(
     message: str,
     target_id: str | None = None,
 ):
-    followers_cursor = db.follows.find({"following_id": actor_id})
-    followers = await followers_cursor.to_list(length=500)
+    if notification_type not in NOTIFICATION_TYPES:
+        return 0
+
+    actor = await db.users.find_one(
+        {"id": actor_id},
+        {"_id": 0, "followers": 1},
+    )
+
+    if not actor:
+        return 0
+
+    follower_ids = actor.get("followers", [])
 
     notifications = []
 
-    for follow in followers:
-        follower_id = follow.get("follower_id")
-
+    for follower_id in follower_ids:
         if not follower_id or follower_id == actor_id:
             continue
 

@@ -1896,7 +1896,124 @@ async def create_next_recurring_task_if_needed(task: dict, user_id: str):
     })
 
     return next_task_id
+async def generate_weekly_recap_for_user(
+    uid: str,
+):
+    now = datetime.now(timezone.utc)
 
+    week_start_dt = now - timedelta(days=7)
+
+    week_start = week_start_dt.date().isoformat()
+    week_end = now.date().isoformat()
+
+    existing = await db.weekly_recaps.find_one(
+        {
+            "user_id": uid,
+            "week_start": week_start,
+        }
+    )
+
+    if existing:
+        existing.pop("_id", None)
+        return existing
+
+    activities = await db.activity_feed.find(
+        {
+            "user_id": uid,
+            "created_at": {
+                "$gte": week_start_dt.isoformat(),
+            },
+        }
+    ).to_list(None)
+
+    transactions = await db.transactions.find(
+        {
+            "user_id": uid,
+            "created_at": {
+                "$gte": week_start_dt.isoformat(),
+            },
+        }
+    ).to_list(None)
+
+    habits_completed = len(
+        [
+            a
+            for a in activities
+            if a.get("type") == "habit_complete"
+        ]
+    )
+
+    tasks_completed = len(
+        [
+            a
+            for a in activities
+            if a.get("type") == "task_complete"
+        ]
+    )
+
+    quests_completed = len(
+        [
+            a
+            for a in activities
+            if a.get("type") == "quest_complete"
+        ]
+    )
+
+    achievements_unlocked = len(
+        [
+            a
+            for a in activities
+            if a.get("type") == "achievement_unlock"
+        ]
+    )
+
+    level_ups = len(
+        [
+            a
+            for a in activities
+            if a.get("type") == "level_up"
+        ]
+    )
+
+    coins_earned = sum(
+        max(t.get("amount", 0), 0)
+        for t in transactions
+    )
+
+    coins_spent = abs(
+        sum(
+            min(t.get("amount", 0), 0)
+            for t in transactions
+        )
+    )
+
+    xp_earned = (
+        habits_completed * 10
+        + tasks_completed * 15
+        + quests_completed * 25
+    )
+
+    recap = {
+        "id": str(uuid.uuid4()),
+        "user_id": uid,
+        "week_start": week_start,
+        "week_end": week_end,
+        "habits_completed": habits_completed,
+        "tasks_completed": tasks_completed,
+        "quests_completed": quests_completed,
+        "achievements_unlocked": achievements_unlocked,
+        "level_ups": level_ups,
+        "coins_earned": coins_earned,
+        "coins_spent": coins_spent,
+        "xp_earned": xp_earned,
+        "created_at": now.isoformat(),
+    }
+
+    await db.weekly_recaps.insert_one(recap)
+
+    recap.pop("_id", None)
+
+    return recap
 
 
 # ============== Tasks ==============
@@ -2103,7 +2220,49 @@ async def uncomplete_task(task_id: str, user: dict = Depends(get_current_user)):
 
     return {"coins_refunded": -coins, "new_balance": new_balance}
 
+@api_router.post("/weekly-recaps/generate")
+async def generate_weekly_recap(
+    current_user=Depends(get_current_user),
+):
+    recap = await generate_weekly_recap_for_user(
+        current_user["id"]
+    )
 
+    return recap
+
+@api_router.post("/weekly-recaps/generate")
+async def generate_weekly_recap(
+    current_user=Depends(get_current_user),
+):
+    recap = await generate_weekly_recap_for_user(
+        current_user["id"]
+    )
+
+    return recap
+
+@api_router.get("/weekly-recaps")
+async def get_weekly_recaps(
+    current_user=Depends(get_current_user),
+):
+    recaps = await db.weekly_recaps.find(
+        {
+            "user_id": current_user["id"]
+        }
+    ).sort(
+        "week_start",
+        -1,
+    ).limit(
+        12
+    ).to_list(
+        12
+    )
+
+    for recap in recaps:
+        recap.pop("_id", None)
+
+    return {
+        "items": recaps,
+    }
 # ============== Rewards ==============
 
 @api_router.get("/rewards")
@@ -2764,6 +2923,14 @@ async def on_startup():
     await db.notifications.create_index("created_at")
     await db.notifications.create_index(
     [("user_id", 1), ("read", 1)]
+    )
+    await db.weekly_recaps.create_index(
+    [("user_id", 1), ("week_start", -1)]
+    )
+
+    await db.weekly_recaps.create_index(
+    [("user_id", 1), ("week_start", 1)],
+    unique=True,
     )
     await db.user_achievements.create_index(
         [("user_id", 1), ("achievement_id", 1)],

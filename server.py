@@ -28,6 +28,7 @@ from email_service import send_password_reset_email
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 from xp import XP_PER_COIN, award_user_xp, xp_progress
+
 from achievements import (
     ACHIEVEMENT_DEFS,
     compute_user_metrics,
@@ -40,6 +41,7 @@ from quests import (
 )
 import requests
 from jwt import PyJWKClient
+from notifications import create_notification, notify_followers
 
 # --- Config ---
 
@@ -1093,6 +1095,89 @@ async def search_users(
 
     return users
 
+@api_router.get("/notifications")
+async def get_notifications(current_user=Depends(get_current_user)):
+    user_id = current_user["id"]
+
+    notifications = (
+        await db.notifications.find({"user_id": user_id})
+        .sort("created_at", -1)
+        .limit(50)
+        .to_list(length=50)
+    )
+
+    for notification in notifications:
+        notification.pop("_id", None)
+
+    return {
+        "ok": True,
+        "notifications": notifications,
+    }
+
+
+@api_router.get("/notifications/unread-count")
+async def get_unread_notification_count(current_user=Depends(get_current_user)):
+    user_id = current_user["id"]
+
+    count = await db.notifications.count_documents(
+        {
+            "user_id": user_id,
+            "read": False,
+        }
+    )
+
+    return {
+        "ok": True,
+        "count": count,
+    }
+
+
+@api_router.post("/notifications/{notification_id}/read")
+async def mark_notification_read(
+    notification_id: str,
+    current_user=Depends(get_current_user),
+):
+    user_id = current_user["id"]
+
+    result = await db.notifications.update_one(
+        {
+            "id": notification_id,
+            "user_id": user_id,
+        },
+        {
+            "$set": {
+                "read": True,
+                "read_at": datetime.now(timezone.utc).isoformat(),
+            }
+        },
+    )
+
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Notification not found")
+
+    return {"ok": True}
+
+
+@api_router.post("/notifications/read-all")
+async def mark_all_notifications_read(current_user=Depends(get_current_user)):
+    user_id = current_user["id"]
+
+    await db.notifications.update_many(
+        {
+            "user_id": user_id,
+            "read": False,
+        },
+        {
+            "$set": {
+                "read": True,
+                "read_at": datetime.now(timezone.utc).isoformat(),
+            }
+        },
+    )
+
+    return {"ok": True}
+
+
 
 @api_router.post("/users/{target_id}/follow")
 async def follow_user(
@@ -1119,24 +1204,43 @@ async def follow_user(
             detail="This profile is private",
         )
 
-    await db.users.update_one(
-        {"id": user["id"]},
-        {
-            "$addToSet": {
-                "following": target_id,
-            }
-        },
-    )
+    following_before = user.get("following", [])
 
+    if target_id in following_before:
+        return {"ok": True}
+    
     await db.users.update_one(
-        {"id": target_id},
-        {
-            "$addToSet": {
-                "followers": user["id"],
-            }
-        },
-    )
+    {"id": user["id"]},
+    {
+        "$addToSet": {
+            "following": target_id,
+        }
+    },
+)
+    await db.users.update_one(
+    {"id": target_id},
+    {
+        "$addToSet": {
+            "followers": user["id"],
+        }
+    },
+)
 
+    actor_name = (
+    user.get("username")
+    or user.get("display_name")
+    or user.get("name")
+    or "Someone"
+)
+
+    await create_notification(
+        db=db,
+        user_id=target_id,
+        actor_id=user["id"],
+        notification_type="followed_you",
+        message=f"{actor_name} followed you",
+        target_id=user["id"],
+    )
     await create_activity(
         user["id"],
         "follow_user",
@@ -1188,13 +1292,13 @@ async def get_followers(
         )
 
     if (
-        not target.get("is_public", True)
-        and target["id"] != user["id"]
+    not target.get("is_public", True)
+    and target["id"] != user["id"]
     ):
         raise HTTPException(
-            status_code=403,
-            detail="Profile is private",
-        )
+        status_code=403,
+        detail="Profile is private",
+    )
 
     follower_ids = target.get("followers", [])
 
@@ -1473,6 +1577,18 @@ async def delete_account(
     await db.habits.delete_many({"user_id": uid})
     await db.tasks.delete_many({"user_id": uid})
     await db.rewards.delete_many({"user_id": uid})
+    activity_ids = [
+    a["id"]
+    for a in await db.activity_feed.find(
+        {"user_id": uid},
+        {"id": 1, "_id": 0},
+    ).to_list(None)
+    ]
+
+    await db.activity_reactions.delete_many({
+    "activity_id": {"$in": activity_ids}
+    })
+
     await db.activity_feed.delete_many({"user_id": uid})
     await db.redemptions.delete_many({"user_id": uid})
     await db.transactions.delete_many({"user_id": uid})
@@ -1488,6 +1604,15 @@ async def delete_account(
         }
     },
     )    
+    await db.activity_reactions.delete_many({"user_id": uid})
+
+    await db.notifications.delete_many({
+    "$or": [
+        {"user_id": uid},
+        {"actor_id": uid},
+    ]
+    })
+   
     await db.users.delete_one({"id": uid})
     response.delete_cookie("access_token", path="/")
 
@@ -1505,7 +1630,21 @@ async def reset_account_data(
     await db.transactions.delete_many({"user_id": uid})
     await db.user_achievements.delete_many({"user_id": uid})
     await db.quest_claims.delete_many({"user_id": uid})
+    activity_ids = [
+    a["id"]
+    for a in await db.activity_feed.find(
+        {"user_id": uid},
+        {"id": 1, "_id": 0},
+    ).to_list(None)
+    ]
+
+    await db.activity_reactions.delete_many({
+    "activity_id": {"$in": activity_ids}
+    })
+
     await db.activity_feed.delete_many({"user_id": uid})
+    await db.activity_reactions.delete_many({"user_id": uid})
+    await db.notifications.delete_many({"user_id": uid})
     await db.users.update_one(
         {"id": uid},
         {
@@ -2422,30 +2561,6 @@ async def get_activity_feed(
     "items": items,
     }
 
-@api_router.get("/feed")
-async def get_social_feed(
-    user: dict = Depends(get_current_user),
-):
-    following_ids = user.get("following", [])
-
-    if not following_ids:
-        return {"items": []}
-
-    items = await db.activity_feed.find(
-        {
-            "user_id": {
-                "$in": following_ids
-            }
-        },
-        {"_id": 0},
-    ).sort(
-        "created_at",
-        -1,
-    ).to_list(100)
-
-    return {
-        "items": items
-    }
 
 @api_router.post("/themes/purchase")
 async def purchase_theme(
@@ -2644,6 +2759,12 @@ async def on_startup():
     await db.transactions.create_index([("user_id", 1), ("source", 1)])
 
     await db.quest_claims.create_index([("user_id", 1), ("claimed_at", -1)])
+    await db.notifications.create_index("user_id")
+    await db.notifications.create_index("actor_id")
+    await db.notifications.create_index("created_at")
+    await db.notifications.create_index(
+    [("user_id", 1), ("read", 1)]
+    )
     await db.user_achievements.create_index(
         [("user_id", 1), ("achievement_id", 1)],
         unique=True,

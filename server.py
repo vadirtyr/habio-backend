@@ -756,12 +756,15 @@ async def google_auth(
     audience = payload.get("aud")
 
     allowed_audiences = [
-        GOOGLE_WEB_CLIENT_ID,
-        GOOGLE_IOS_CLIENT_ID,
-        GOOGLE_ANDROID_CLIENT_ID,
+        aud for aud in (
+            GOOGLE_WEB_CLIENT_ID,
+            GOOGLE_IOS_CLIENT_ID,
+            GOOGLE_ANDROID_CLIENT_ID,
+        )
+        if aud
     ]
 
-    if audience not in allowed_audiences:
+    if not allowed_audiences or audience not in allowed_audiences:
         raise HTTPException(
             status_code=401,
             detail="Invalid Google client",

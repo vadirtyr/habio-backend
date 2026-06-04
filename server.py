@@ -333,6 +333,20 @@ async def create_achievement_activities(
             achievement_id=achievement["id"],
             achievement_name=achievement["name"],
         )
+        user = await db.users.find_one(
+            {"id": user_id},
+            {"display_name": 1, "name": 1, "_id": 0},
+        )
+
+        await create_friend_activity_notifications(
+            actor_user_id=user_id,
+            activity_type="achievement_unlock",
+            message=f'{user.get("display_name") or user.get("name")} unlocked {achievement["name"]}',
+            metadata={
+                "achievement_id": achievement["id"],
+            "achievement_name": achievement["name"],
+            },
+        )
 
 def today_str() -> str:
     return datetime.now(timezone.utc).date().isoformat()
@@ -545,6 +559,54 @@ async def get_current_user(request: Request) -> dict:
         raise HTTPException(status_code=401, detail="User not found")
 
     return user
+
+async def create_friend_activity_notifications(
+    actor_user_id: str,
+    activity_type: str,
+    message: str,
+    metadata: dict | None = None,
+):
+    if not actor_user_id:
+        return
+
+    actor = await db.users.find_one(
+        {"id": actor_user_id},
+        {"followers": 1, "_id": 0},
+    )
+
+    if not actor:
+        return
+
+    followers = actor.get("followers", [])
+
+    if not followers:
+        return
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    notifications = []
+
+    for recipient_id in followers:
+
+
+        if not recipient_id or recipient_id == actor_user_id:
+            continue
+
+        notifications.append(
+            {
+                "id": str(uuid.uuid4()),
+                "user_id": recipient_id,
+                "actor_user_id": actor_user_id,
+                "type": activity_type,
+                "message": message,
+                "metadata": metadata or {},
+                "read": False,
+                "created_at": now,
+            }
+        )
+
+    if notifications:
+        await db.notifications.insert_many(notifications)
 
 
 async def log_transaction(
@@ -1407,6 +1469,7 @@ async def get_public_activity(
 
     return {"items": items}
 
+
 @api_router.post("/auth/change-password")
 @limiter.limit("5/minute")
 async def change_password(
@@ -1612,7 +1675,7 @@ async def delete_account(
     await db.notifications.delete_many({
     "$or": [
         {"user_id": uid},
-        {"actor_id": uid},
+        {"actor_user_id": uid},
     ]
     })
    
@@ -1647,7 +1710,12 @@ async def reset_account_data(
 
     await db.activity_feed.delete_many({"user_id": uid})
     await db.activity_reactions.delete_many({"user_id": uid})
-    await db.notifications.delete_many({"user_id": uid})
+    await db.notifications.delete_many({
+        "$or": [
+             {"user_id": uid},
+             {"actor_user_id": uid},
+        ]
+    })
     await db.users.update_one(
         {"id": uid},
         {
@@ -1817,7 +1885,16 @@ async def complete_habit(habit_id: str, user: dict = Depends(get_current_user)):
         "level_up",
         level=xp_data["new_level"],
         old_level=xp_data["old_level"],
-    )
+        )
+        
+        await create_friend_activity_notifications(
+            actor_user_id=user["id"],
+            activity_type="level_up",
+            message=f'{user.get("display_name") or user.get("name")} reached level {xp_data["new_level"]}',
+            metadata={
+                "level": xp_data["new_level"],
+            },
+        )
 
     new_balance = user.get("coin_balance", 0) + coins
 
@@ -1844,6 +1921,17 @@ async def complete_habit(habit_id: str, user: dict = Depends(get_current_user)):
     coins=coins,
     )
 
+    await create_friend_activity_notifications(
+    actor_user_id=user["id"],
+    activity_type="habit_complete",
+    message=f'{user.get("display_name") or user.get("name")} completed {habit["name"]}',
+    metadata={
+        "habit_id": habit_id,
+        "habit_name": habit["name"],
+        "streak": new_streak,
+    },
+)
+    
     newly_earned = await sync_user_achievements(db, user["id"])
     await create_achievement_activities(
     user["id"],
@@ -2113,14 +2201,25 @@ async def complete_task(task_id: str, user: dict = Depends(get_current_user)):
         {"id": task_id},
         {"$set": {"completed": True, "completed_at": now_utc_iso()}},
     )
+    
     if xp_data["leveled_up"]:
         await create_activity(
-        user["id"],
-        "level_up",
-        level=xp_data["new_level"],
-        old_level=xp_data["old_level"],
-    )
+            user["id"],
+            "level_up",
+            level=xp_data["new_level"],
+            old_level=xp_data["old_level"],
+        )
+
+        await create_friend_activity_notifications(
+            actor_user_id=user["id"],
+            activity_type="level_up",
+            message=f'{user.get("display_name") or user.get("name")} reached level {xp_data["new_level"]}',
+            metadata={
+                "level": xp_data["new_level"],
+            },
+        )
     new_balance = user.get("coin_balance", 0) + coins
+
 
     await db.users.update_one(
         {"id": user["id"]},
@@ -2148,6 +2247,16 @@ async def complete_task(task_id: str, user: dict = Depends(get_current_user)):
     coins=coins,
     )
 
+    await create_friend_activity_notifications(
+    actor_user_id=user["id"],
+    activity_type="task_complete",
+    message=f'{user.get("display_name") or user.get("name")} completed {task["name"]}',
+    metadata={
+        "task_id": task_id,
+        "task_name": task["name"],
+    },
+)
+    
     next_task_id = await create_next_recurring_task_if_needed(
     task,
     user["id"],
@@ -2233,15 +2342,6 @@ async def generate_weekly_recap(
 
     return recap
 
-@api_router.post("/weekly-recaps/generate")
-async def generate_weekly_recap(
-    current_user=Depends(get_current_user),
-):
-    recap = await generate_weekly_recap_for_user(
-        current_user["id"]
-    )
-
-    return recap
 
 @api_router.get("/weekly-recaps")
 async def get_weekly_recaps(
@@ -2569,11 +2669,20 @@ async def claim_quest(quest_id: str, user: dict = Depends(get_current_user)):
 
     if xp_data["leveled_up"]:
         await create_activity(
-        uid,
-        "level_up",
-        level=xp_data["new_level"],
-        old_level=xp_data["old_level"],
-    )
+            uid,
+            "level_up",
+            level=xp_data["new_level"],
+            old_level=xp_data["old_level"],
+        )
+        
+        await create_friend_activity_notifications(
+            actor_user_id=user["id"],
+            activity_type="level_up",
+            message=f'{user.get("display_name") or user.get("name")} reached level {xp_data["new_level"]}',
+            metadata={
+            "level": xp_data["new_level"],
+            },
+        )
 
     await db.quest_claims.insert_one({
         "user_id": uid,
@@ -2598,6 +2707,16 @@ async def claim_quest(quest_id: str, user: dict = Depends(get_current_user)):
     coins=reward,
     period=quest["period"],
     )
+
+    await create_friend_activity_notifications(
+    actor_user_id=uid,
+    activity_type="quest_complete",
+    message=f'{user.get("display_name") or user.get("name")} completed the quest {quest["name"]}',
+    metadata={
+        "quest_id": quest["id"],
+        "quest_name": quest["name"],
+    },
+)
 
     newly_earned = await sync_user_achievements(db, uid)
 
@@ -2922,8 +3041,11 @@ async def on_startup():
 
     await db.quest_claims.create_index([("user_id", 1), ("claimed_at", -1)])
     await db.notifications.create_index("user_id")
-    await db.notifications.create_index("actor_id")
+    await db.notifications.create_index("actor_user_id")
     await db.notifications.create_index("created_at")
+    await db.notifications.create_index(
+    [("user_id", 1), ("created_at", -1)]
+    )
     await db.notifications.create_index(
     [("user_id", 1), ("read", 1)]
     )

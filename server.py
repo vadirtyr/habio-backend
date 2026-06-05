@@ -966,6 +966,43 @@ async def google_auth(
 
     return build_auth_response(user, response)
 
+@api_router.post("/auth/unlink-google")
+@limiter.limit("10/minute")
+async def unlink_google(
+    request: Request,
+    response: Response,
+    user: dict = Depends(get_current_user),
+):
+    fresh_user = await db.users.find_one({"id": user["id"]}, {"_id": 0})
+    if not fresh_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    providers = fresh_user.get("auth_providers", ["password"])
+    is_linked = "google" in providers or bool(fresh_user.get("google_id"))
+
+    # Idempotent: nothing to unlink.
+    if not is_linked:
+        return build_auth_response(fresh_user, response)
+
+    # Safety guard: never leave a user without a usable login method.
+    if not fresh_user.get("password_hash"):
+        raise HTTPException(
+            status_code=400,
+            detail="Set a password before unlinking Google, otherwise you'll lose access to your account.",
+        )
+
+    new_providers = [p for p in providers if p != "google"]
+    if "password" not in new_providers:
+        new_providers.append("password")
+
+    await db.users.update_one(
+        {"id": user["id"]},
+        {"$set": {"google_id": None, "auth_providers": new_providers}},
+    )
+    fresh_user["google_id"] = None
+    fresh_user["auth_providers"] = new_providers
+    return build_auth_response(fresh_user, response)
+
 @api_router.post("/auth/logout")
 async def logout(response: Response):
     response.delete_cookie("access_token", path="/")

@@ -17,3 +17,4 @@ resend
 google-auth
 requests
 PyJWT
+httpx

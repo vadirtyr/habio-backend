@@ -31,3 +31,4 @@ google-auth
 requests
 cryptography
 PyJWT
+httpx

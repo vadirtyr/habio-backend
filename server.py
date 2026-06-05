@@ -1,3 +1,5 @@
+from resend import response
+
 from dotenv import load_dotenv
 from pathlib import Path
 
@@ -12,6 +14,8 @@ import jwt
 import secrets
 import asyncio
 import re
+import httpx
+
 
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response
 from starlette.middleware.cors import CORSMiddleware
@@ -310,6 +314,54 @@ async def attach_reaction_summaries(
 
     return items
 
+async def send_push_notification(
+    user_id: str,
+    title: str,
+    body: str,
+    data: dict | None = None,
+):
+    tokens = await db.push_tokens.find(
+        {"user_id": user_id}
+    ).to_list(length=20)
+
+    if not tokens:
+        return
+
+    messages = []
+
+    for token_doc in tokens:
+        token = token_doc.get("token")
+
+        if not token:
+            continue
+
+        messages.append(
+            {
+                "to": token,
+                "sound": "default",
+                "title": title,
+                "body": body,
+                "data": data or {},
+            }
+        )
+
+    if not messages:
+        return
+
+    try:
+        async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    "https://exp.host/--/api/v2/push/send",
+                    json=messages,
+                    timeout=10,
+                )
+
+                print("Push response:", response.status_code)
+                print(response.text)
+        
+    except Exception as exc:
+        print("Push notification error:", exc)
+
 async def create_achievement_activities(
     user_id: str,
     achievement_ids: list,
@@ -587,8 +639,6 @@ async def create_friend_activity_notifications(
     notifications = []
 
     for recipient_id in followers:
-
-
         if not recipient_id or recipient_id == actor_user_id:
             continue
 
@@ -607,6 +657,21 @@ async def create_friend_activity_notifications(
 
     if notifications:
         await db.notifications.insert_many(notifications)
+
+        # Send push notifications
+        for recipient_id in followers:
+            if not recipient_id or recipient_id == actor_user_id:
+                continue
+
+            await send_push_notification(
+                user_id=recipient_id,
+                title="Friend Activity",
+                body=message,
+                data={
+                    "type": activity_type,
+                    "actor_user_id": actor_user_id,
+                },
+            )
 
 
 async def log_transaction(
@@ -1335,6 +1400,16 @@ async def follow_user(
         message=f"{actor_name} followed you",
         target_id=user["id"],
     )
+    await send_push_notification(
+        user_id=target_id,
+        title="New Follower",
+        body=f"{actor_name} followed you",
+        data={
+            "type": "followed_you",
+            "actor_user_id": user["id"],
+        },
+    )
+
     await create_activity(
         user["id"],
         "follow_user",
@@ -3146,6 +3221,10 @@ async def on_startup():
         {"$set": {"owned_avatars": DEFAULT_AVATARS.copy()}},
     )
 
+    await db.push_tokens.create_index(
+    [("user_id", 1)],
+    )
+    
     asyncio.create_task(cleanup_expired_password_resets())
     admin_email = os.environ.get("ADMIN_EMAIL", "admin@example.com").lower()
     admin_password = os.environ.get("ADMIN_PASSWORD", "admin123")

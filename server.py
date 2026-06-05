@@ -707,6 +707,10 @@ class ProfileUpdateIn(BaseModel):
 class ActivityReactionIn(BaseModel):
     reaction: Literal["like", "cheer"]
 
+class PushTokenIn(BaseModel):
+    token: str
+    platform: Optional[str] = None
+
 # ============== Auth Routes ==============
 
 @api_router.post("/auth/register")
@@ -1242,7 +1246,32 @@ async def mark_all_notifications_read(current_user=Depends(get_current_user)):
 
     return {"ok": True}
 
+@api_router.post("/push/register")
+async def register_push_token(
+    body: PushTokenIn,
+    user: dict = Depends(get_current_user),
+):
+    await db.push_tokens.update_one(
+        {
+            "user_id": user["id"],
+            "token": body.token,
+        },
+        {
+            "$set": {
+                "user_id": user["id"],
+                "token": body.token,
+                "platform": body.platform,
+                "updated_at": now_utc_iso(),
+            },
+            "$setOnInsert": {
+                "id": str(uuid.uuid4()),
+                "created_at": now_utc_iso(),
+            },
+        },
+        upsert=True,
+    )
 
+    return {"ok": True}
 
 @api_router.post("/users/{target_id}/follow")
 async def follow_user(
@@ -3108,6 +3137,10 @@ async def on_startup():
         {"$set": {"avatar": "explorer"}},
     )
 
+    await db.push_tokens.create_index(
+        [("user_id", 1), ("token", 1)],
+        unique=True,
+    )
     await db.users.update_many(
         {"owned_avatars": {"$exists": False}},
         {"$set": {"owned_avatars": DEFAULT_AVATARS.copy()}},

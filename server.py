@@ -437,6 +437,7 @@ def clean_user(u: dict) -> dict:
         "level_data": xp_progress(xp),
         "selected_theme": u.get("selected_theme", "light"),
         "owned_themes": u.get("owned_themes", DEFAULT_THEMES.copy()),
+        "onboarding_completed": u.get("onboarding_completed", False),
         "created_at": u.get("created_at"),
     }
 
@@ -812,6 +813,7 @@ async def register(
         "owned_avatars": DEFAULT_AVATARS.copy(),
         "selected_theme": "light",
         "owned_themes": DEFAULT_THEMES.copy(),
+        "onboarding_completed": False,
         "created_at": now_utc_iso(),
     }
 
@@ -2507,6 +2509,24 @@ async def get_weekly_recaps(
     return {
         "items": recaps,
     }
+
+@api_router.post("/onboarding/complete")
+async def complete_onboarding(
+    user: dict = Depends(get_current_user),
+):
+    await db.users.update_one(
+        {"id": user["id"]},
+        {
+            "$set": {
+                "onboarding_completed": True,
+            }
+        },
+    )
+
+    return {
+        "ok": True,
+        "onboarding_completed": True,
+    }
 # ============== Rewards ==============
 
 @api_router.get("/rewards")
@@ -3247,6 +3267,11 @@ async def on_startup():
     await db.users.update_many(
         {"avatar": {"$exists": False}},
         {"$set": {"avatar": "explorer"}},
+    )
+
+    await db.users.update_many(
+        {"onboarding_completed": {"$exists": False}},
+        {"$set": {"onboarding_completed": False}},
     )
 
     await db.push_tokens.create_index(

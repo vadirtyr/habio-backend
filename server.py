@@ -32,7 +32,7 @@ from email_service import send_password_reset_email
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 from xp import XP_PER_COIN, award_user_xp, xp_progress
-
+from services.push_service import send_expo_push
 from achievements import (
     ACHIEVEMENT_DEFS,
     compute_user_metrics,
@@ -1355,6 +1355,10 @@ async def register_push_token(
     body: PushTokenIn,
     user: dict = Depends(get_current_user),
 ):
+    print("PUSH REGISTER CALLED")
+    print("User:", user["id"])
+    print("Token:", body.token)
+    print("Platform:", body.platform)
     await db.push_tokens.update_one(
         {
             "user_id": user["id"],
@@ -1382,6 +1386,7 @@ async def follow_user(
     target_id: str,
     user: dict = Depends(get_current_user),
 ):
+
     if target_id == user["id"]:
         raise HTTPException(
             status_code=400,
@@ -1389,7 +1394,7 @@ async def follow_user(
         )
 
     target = await db.users.find_one({"id": target_id})
-
+    
     if not target:
         raise HTTPException(
             status_code=404,
@@ -2249,6 +2254,31 @@ async def generate_weekly_recap_for_user(
 
     return recap
 
+
+from pydantic import BaseModel
+
+class PushTokenIn(BaseModel):
+    token: str
+
+
+@api_router.post("/notifications/register-device")
+async def register_push_device(
+    body: PushTokenIn,
+    current_user: dict = Depends(get_current_user),
+):
+    token = body.token.strip()
+
+    if not token.startswith("ExponentPushToken[") and not token.startswith("ExpoPushToken["):
+        raise HTTPException(status_code=400, detail="Invalid Expo push token")
+
+    await db.users.update_one(
+        {"id": current_user["id"]},
+        {
+            "$addToSet": {"push_tokens": token},
+        },
+    )
+
+    return {"ok": True}
 
 # ============== Tasks ==============
 

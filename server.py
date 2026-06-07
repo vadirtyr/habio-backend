@@ -32,7 +32,7 @@ from email_service import send_password_reset_email
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 from xp import XP_PER_COIN, award_user_xp, xp_progress
-from services.push_service import send_expo_push
+
 from achievements import (
     ACHIEVEMENT_DEFS,
     compute_user_metrics,

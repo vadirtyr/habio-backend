@@ -1,3 +1,5 @@
+from pyexpat.errors import messages
+
 from resend import response
 
 from dotenv import load_dotenv
@@ -358,7 +360,10 @@ async def send_push_notification(
 
                 print("Push response:", response.status_code)
                 print(response.text)
-        
+                print(f"Sending push to user_id={user_id}")
+                print(f"Found push tokens: {len(tokens)}")
+                print("Messages:", messages)
+                
     except Exception as exc:
         print("Push notification error:", exc)
 

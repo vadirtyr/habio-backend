@@ -577,6 +577,8 @@ async def clean_profile(u: dict) -> dict:
         "owned_avatars": owned_avatars,
         "followers_count": followers_count,
         "following_count": following_count,
+        "following": u.get("following", []),
+        "followers": u.get("followers", []),
         "avatar_store": list(AVATAR_STORE.values()),
         "created_at": u.get("created_at"),
     }

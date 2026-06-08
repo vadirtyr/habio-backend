@@ -322,9 +322,13 @@ async def send_push_notification(
     body: str,
     data: dict | None = None,
 ):
+    print(f"send_push_notification called for user_id={user_id}")
+
     tokens = await db.push_tokens.find(
         {"user_id": user_id}
     ).to_list(length=20)
+
+    print(f"Found push tokens: {len(tokens)}")
 
     if not tokens:
         return
@@ -337,36 +341,31 @@ async def send_push_notification(
         if not token:
             continue
 
-        messages.append(
-            {
-                "to": token,
-                "sound": "default",
-                "title": title,
-                "body": body,
-                "data": data or {},
-            }
-        )
+        messages.append({
+            "to": token,
+            "sound": "default",
+            "title": title,
+            "body": body,
+            "data": data or {},
+        })
+
+    print("Messages:", messages)
 
     if not messages:
         return
 
     try:
-        async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    "https://exp.host/--/api/v2/push/send",
-                    json=messages,
-                    timeout=10,
-                )
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.post(
+                "https://exp.host/--/api/v2/push/send",
+                json=messages,
+            )
 
-                print("Push response:", response.status_code)
-                print(response.text)
-                print(f"Sending push to user_id={user_id}")
-                print(f"Found push tokens: {len(tokens)}")
-                print("Messages:", messages)
-                
+        print("Push response:", response.status_code)
+        print(response.text)
+
     except Exception as exc:
         print("Push notification error:", exc)
-
 async def create_achievement_activities(
     user_id: str,
     achievement_ids: list,

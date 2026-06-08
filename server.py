@@ -1413,6 +1413,11 @@ async def follow_user(
 
     following_before = user.get("following", [])
 
+    print("FOLLOW DEBUG")
+    print("actor user_id:", user["id"])
+    print("target_id:", target_id)
+    print("already following:", target_id in following_before)
+
     if target_id in following_before:
         return {"ok": True}
     

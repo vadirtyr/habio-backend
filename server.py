@@ -362,7 +362,12 @@ async def send_push_notification(
             )
 
         print("Push response:", response.status_code)
-        print(response.text)
+
+        try:
+            result = response.json()
+            print("Push result:", result)
+        except Exception:
+            print("Push raw response:", response.text)
 
     except Exception as exc:
         print("Push notification error:", exc)

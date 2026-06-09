@@ -1079,7 +1079,7 @@ async def react_to_activity(
         "created_at": now_utc_iso(),
     }
 
-    await db.activity_reactions.update_one(
+    result = await db.activity_reactions.update_one(
         {
             "activity_id": activity_id,
             "user_id": user["id"],
@@ -1090,6 +1090,44 @@ async def react_to_activity(
         },
         upsert=True,
     )
+
+    activity_owner_id = activity.get("user_id")
+
+    if result.upserted_id and activity_owner_id and activity_owner_id != user["id"]:
+        actor_name = (
+            user.get("username")
+            or user.get("display_name")
+            or user.get("name")
+            or "Someone"
+        )
+
+        reaction_label = {
+            "like": "liked",
+            "cheer": "cheered",
+        }.get(body.reaction, "reacted to")
+
+        message = f"{actor_name} {reaction_label} your activity"
+
+        await create_notification(
+            db=db,
+            user_id=activity_owner_id,
+            actor_id=user["id"],
+            notification_type="activity_reaction",
+            message=message,
+            target_id=activity_id,
+        )
+
+        await send_push_notification(
+            user_id=activity_owner_id,
+            title="New Reaction",
+            body=message,
+            data={
+                "type": "activity_reaction",
+                "actor_user_id": user["id"],
+                "activity_id": activity_id,
+                "reaction": body.reaction,
+            },
+        )
 
     return {
         "ok": True,

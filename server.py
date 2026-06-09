@@ -737,6 +737,8 @@ class HabitIn(BaseModel):
     custom_coins: Optional[int] = Field(default=None, ge=1, le=100)
     icon: Optional[str] = Field(default="flame", max_length=40)
     category: Optional[str] = Field(default=None, max_length=60)
+    reminder_enabled: Optional[bool] = False
+    reminder_time: Optional[str] = Field(default=None, max_length=5)
 
 
 class TaskIn(BaseModel):
@@ -1964,6 +1966,9 @@ async def create_habit(body: HabitIn, user: dict = Depends(get_current_user)):
         "coins_per_completion": coins_for(body.difficulty, body.custom_coins),
         "icon": body.icon or "flame",
         "category": body.category,
+        "reminder_enabled": bool(body.reminder_enabled),
+        "reminder_time": body.reminder_time,
+        "last_reminder_sent_date": None,
         "streak": 0,
         "longest_streak": 0,
         "last_completed_date": None,
@@ -1992,6 +1997,10 @@ async def update_habit(habit_id: str, body: HabitIn, user: dict = Depends(get_cu
         "coins_per_completion": coins_for(body.difficulty, body.custom_coins),
         "icon": body.icon or "flame",
         "category": body.category,
+
+        # NEW
+        "reminder_enabled": bool(body.reminder_enabled),
+        "reminder_time": body.reminder_time,
     }
 
     result = await db.habits.update_one(
@@ -3087,6 +3096,75 @@ async def get_activity_feed(
     "items": items,
     }
 
+@api_router.post("/streak-reminders/send-due")
+async def send_due_streak_reminders():
+    today = today_str()
+    now = datetime.now(timezone.utc)
+    current_time = now.strftime("%H:%M")
+
+    habits = await db.habits.find(
+        {
+            "reminder_enabled": True,
+            "reminder_time": {"$lte": current_time},
+            "streak": {"$gt": 0},
+            "last_reminder_sent_date": {"$ne": today},
+        },
+        {"_id": 0},
+    ).to_list(500)
+
+    sent = 0
+
+    for habit in habits:
+        completions = habit.get("completions", [])
+
+        if today in completions:
+            continue
+
+        user_id = habit["user_id"]
+        habit_name = habit.get("name", "Your habit")
+        streak = habit.get("streak", 0)
+
+        message = (
+            f"{habit_name} is at {streak} day"
+            f"{'' if streak == 1 else 's'}. Complete it today to keep it going."
+        )
+
+        await create_notification(
+            db=db,
+            user_id=user_id,
+            actor_id=None,
+            notification_type="streak_reminder",
+            message=message,
+            target_id=habit["id"],
+        )
+
+        await send_push_notification(
+            user_id=user_id,
+            title="🔥 Don’t break your streak!",
+            body=message,
+            data={
+                "type": "streak_reminder",
+                "habit_id": habit["id"],
+            },
+        )
+
+        await db.habits.update_one(
+            {"id": habit["id"]},
+            {
+                "$set": {
+                    "last_reminder_sent_date": today,
+                    "last_reminder_sent_at": now_utc_iso(),
+                }
+            },
+        )
+
+        sent += 1
+
+    return {
+        "ok": True,
+        "checked": len(habits),
+        "sent": sent,
+    }
 
 @api_router.post("/themes/purchase")
 async def purchase_theme(
@@ -3365,6 +3443,16 @@ async def on_startup():
     await db.users.update_many(
         {"owned_avatars": {"$exists": False}},
         {"$set": {"owned_avatars": DEFAULT_AVATARS.copy()}},
+    )
+    await db.habits.update_many(
+    {"reminder_enabled": {"$exists": False}},
+    {
+        "$set": {
+            "reminder_enabled": False,
+            "reminder_time": None,
+            "last_reminder_sent_date": None,
+        }
+    },
     )
 
     await db.push_tokens.create_index(

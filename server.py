@@ -3097,10 +3097,19 @@ async def get_activity_feed(
     }
 
 @api_router.post("/streak-reminders/send-due")
-async def send_due_streak_reminders():
+async def send_due_streak_reminders(request: Request):
+    cron_secret = os.environ.get("CRON_SECRET")
+
+    if cron_secret:
+        provided = request.headers.get("X-Cron-Secret")
+
+        if provided != cron_secret:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
     today = today_str()
     now = datetime.now(timezone.utc)
     current_time = now.strftime("%H:%M")
+
 
     habits = await db.habits.find(
         {

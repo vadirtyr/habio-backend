@@ -394,6 +394,26 @@ async def create_achievement_activities(
             achievement_id=achievement["id"],
             achievement_name=achievement["name"],
         )
+
+        await create_notification(
+            db=db,
+            user_id=user_id,
+            actor_id=None,
+            notification_type="achievement_unlock",
+            message=f'Achievement unlocked: {achievement["name"]}',
+            target_id=achievement["id"],
+        )
+
+        await send_push_notification(
+            user_id=user_id,
+            title="🏆 Achievement Unlocked!",
+            body=f'You unlocked {achievement["name"]}',
+            data={
+                "type": "achievement_unlock",
+                "achievement_id": achievement["id"],
+            },
+        )
+
         user = await db.users.find_one(
             {"id": user_id},
             {"display_name": 1, "name": 1, "_id": 0},
@@ -405,7 +425,7 @@ async def create_achievement_activities(
             message=f'{user.get("display_name") or user.get("name")} unlocked {achievement["name"]}',
             metadata={
                 "achievement_id": achievement["id"],
-            "achievement_name": achievement["name"],
+                "achievement_name": achievement["name"],
             },
         )
 
@@ -2072,6 +2092,49 @@ async def complete_habit(habit_id: str, user: dict = Depends(get_current_user)):
         return 0
 
     bonus = streak_bonus(new_streak)
+
+    STREAK_MILESTONES = [7, 14, 30, 100, 365]
+
+    if new_streak in STREAK_MILESTONES:
+        await create_notification(
+            db=db,
+            user_id=user["id"],
+            actor_id=None,
+            notification_type="streak_milestone",
+            message=f'{habit["name"]} reached a {new_streak}-day streak!',
+            target_id=habit["id"],
+        )
+
+        await send_push_notification(
+            user_id=user["id"],
+            title="🔥 Streak Milestone!",
+            body=f'{habit["name"]} reached a {new_streak}-day streak!',
+            data={
+                "type": "streak_milestone",
+                "habit_id": habit["id"],
+                "streak": new_streak,
+            },
+        )
+
+        await create_activity(
+            user["id"],
+            "streak_milestone",
+            habit_id=habit["id"],
+            habit_name=habit["name"],
+            streak=new_streak,
+        )
+
+        await create_friend_activity_notifications(
+            actor_user_id=user["id"],
+            activity_type="streak_milestone",
+            message=f'{user.get("display_name") or user.get("name")} reached a {new_streak}-day streak on {habit["name"]}',
+            metadata={
+                "habit_id": habit["id"],
+                "habit_name": habit["name"],
+                "streak": new_streak,
+            },
+        )
+
     coins = base_coins + bonus
     xp_data = await award_user_xp(user, coins)
 
@@ -2106,7 +2169,24 @@ async def complete_habit(habit_id: str, user: dict = Depends(get_current_user)):
                 "level": xp_data["new_level"],
             },
         )
+        await create_notification(
+            db=db,
+            user_id=user["id"],
+            actor_id=None,
+            notification_type="level_up",
+            message=f'You reached level {xp_data["new_level"]}!',
+            target_id=str(xp_data["new_level"]),
+        )
 
+        await send_push_notification(
+            user_id=user["id"],
+            title="⭐ Level Up!",
+            body=f'You reached level {xp_data["new_level"]}!',
+            data={
+                "type": "level_up",
+                "level": xp_data["new_level"],
+            },
+        )
     new_balance = user.get("coin_balance", 0) + coins
 
     await db.users.update_one(
@@ -2445,7 +2525,24 @@ async def complete_task(task_id: str, user: dict = Depends(get_current_user)):
             level=xp_data["new_level"],
             old_level=xp_data["old_level"],
         )
+        await create_notification(
+            db=db,
+            user_id=user["id"],
+            actor_id=None,
+            notification_type="level_up",
+            message=f'You reached level {xp_data["new_level"]}!',
+        target_id=str(xp_data["new_level"]),
+        )
 
+        await send_push_notification(
+            user_id=user["id"],
+            title="⭐ Level Up!",
+            body=f'You reached level {xp_data["new_level"]}!',
+            data={
+                "type": "level_up",
+                "level": xp_data["new_level"],
+            },
+        )
         await create_friend_activity_notifications(
             actor_user_id=user["id"],
             activity_type="level_up",
@@ -2929,6 +3026,24 @@ async def claim_quest(quest_id: str, user: dict = Depends(get_current_user)):
             old_level=xp_data["old_level"],
         )
         
+        await create_notification(
+            db=db,
+            user_id=user["id"],
+            actor_id=None,
+            notification_type="level_up",
+            message=f'You reached level {xp_data["new_level"]}!',
+            target_id=str(xp_data["new_level"]),
+        )
+
+        await send_push_notification(
+            user_id=user["id"],
+            title="⭐ Level Up!",
+            body=f'You reached level {xp_data["new_level"]}!',
+            data={
+                "type": "level_up",
+                "level": xp_data["new_level"],
+            },
+        )
         await create_friend_activity_notifications(
             actor_user_id=user["id"],
             activity_type="level_up",

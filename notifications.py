@@ -4,13 +4,13 @@ from uuid import uuid4
 
 NOTIFICATION_TYPES = {
     "followed_you",
-    "achievement_unlocked",
+    "achievement_unlock",
     "level_up",
     "streak_milestone",
-    "quest_completed",
+    "quest_complete",
     "reward_unlocked",
-    "like_received",
-    "cheer_received",
+    "activity_reaction",
+    "streak_reminder",
     "weekly_recap",
 }
 
@@ -22,12 +22,12 @@ def utc_now():
 async def create_notification(
     db,
     user_id: str,
-    actor_id: str,
+    actor_id: str | None,
     notification_type: str,
     message: str,
     target_id: str | None = None,
 ):
-    if not user_id or not actor_id:
+    if not user_id:
         return None
 
     if notification_type not in NOTIFICATION_TYPES:
@@ -37,6 +37,7 @@ async def create_notification(
         "id": str(uuid4()),
         "user_id": user_id,
         "actor_id": actor_id,
+        "actor_user_id": actor_id,
         "type": notification_type,
         "message": message,
         "target_id": target_id,

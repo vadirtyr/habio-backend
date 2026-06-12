@@ -22,6 +22,8 @@ import httpx
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import ReturnDocument
+from pymongo.errors import DuplicateKeyError
 from pydantic import BaseModel, EmailStr, Field
 from typing import Optional, Literal
 from datetime import datetime, timezone, timedelta
@@ -198,17 +200,22 @@ def verify_password(plain: str, hashed: str) -> bool:
         return False
 
 
-def create_access_token(user_id: str, email: str) -> str:
+def create_access_token(user_id: str, email: str, token_version: int = 0) -> str:
     payload = {
         "sub": user_id,
         "email": email,
         "exp": datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_MINUTES),
         "type": "access",
+        "ver": token_version,
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 def build_auth_response(user: dict, response: Response):
-    token = create_access_token(user["id"], user["email"])
+    token = create_access_token(
+        user["id"],
+        user["email"],
+        int(user.get("token_version", 0)),
+    )
 
     response.set_cookie(
         "access_token",
@@ -322,13 +329,9 @@ async def send_push_notification(
     body: str,
     data: dict | None = None,
 ):
-    print(f"send_push_notification called for user_id={user_id}")
-
     tokens = await db.push_tokens.find(
         {"user_id": user_id}
     ).to_list(length=20)
-
-    print(f"Found push tokens: {len(tokens)}")
 
     if not tokens:
         return
@@ -349,8 +352,6 @@ async def send_push_notification(
             "data": data or {},
         })
 
-    print("Messages:", messages)
-
     if not messages:
         return
 
@@ -361,16 +362,10 @@ async def send_push_notification(
                 json=messages,
             )
 
-        print("Push response:", response.status_code)
-
-        try:
-            result = response.json()
-            print("Push result:", result)
-        except Exception:
-            print("Push raw response:", response.text)
+        response.raise_for_status()
 
     except Exception as exc:
-        print("Push notification error:", exc)
+        logger.warning("Push notification delivery failed: %s", exc)
 async def create_achievement_activities(
     user_id: str,
     achievement_ids: list,
@@ -642,6 +637,9 @@ async def get_current_user(request: Request) -> dict:
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
 
+    if int(payload.get("ver", 0)) != int(user.get("token_version", 0)):
+        raise HTTPException(status_code=401, detail="Session revoked")
+
     return user
 
 async def create_friend_activity_notifications(
@@ -848,11 +846,12 @@ async def register(
         "owned_themes": DEFAULT_THEMES.copy(),
         "onboarding_completed": False,
         "created_at": now_utc_iso(),
+        "token_version": 0,
     }
 
     await db.users.insert_one(user_doc)
 
-    token = create_access_token(user_id, email)
+    token = create_access_token(user_id, email, 0)
 
     response.set_cookie(
         "access_token",
@@ -886,7 +885,11 @@ async def login(
         logger.warning(f"Failed login attempt for {email}")
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
-    token = create_access_token(user["id"], email)
+    token = create_access_token(
+        user["id"],
+        email,
+        int(user.get("token_version", 0)),
+    )
 
     response.set_cookie(
     "access_token",
@@ -975,6 +978,7 @@ async def google_auth(
             "selected_theme": "light",
             "owned_themes": DEFAULT_THEMES.copy(),
             "created_at": now_utc_iso(),
+            "token_version": 0,
         }
 
         await db.users.insert_one(user)
@@ -1426,10 +1430,6 @@ async def register_push_token(
     body: PushTokenIn,
     user: dict = Depends(get_current_user),
 ):
-    print("PUSH REGISTER CALLED")
-    print("User:", user["id"])
-    print("Token:", body.token)
-    print("Platform:", body.platform)
     await db.push_tokens.update_one(
         {
             "user_id": user["id"],
@@ -1719,7 +1719,10 @@ async def change_password(
 
     await db.users.update_one(
         {"id": user["id"]},
-        {"$set": {"password_hash": new_hash}},
+        {
+            "$set": {"password_hash": new_hash},
+            "$inc": {"token_version": 1},
+        },
     )
 
     return {"ok": True, "message": "Password changed successfully"}
@@ -1835,7 +1838,8 @@ async def reset_password(
         {
             "$set": {
                 "password_hash": new_hash,
-            }
+            },
+            "$inc": {"token_version": 1},
         },
     )
 
@@ -1899,6 +1903,7 @@ async def delete_account(
     await db.notifications.delete_many({
     "$or": [
         {"user_id": uid},
+        {"actor_id": uid},
         {"actor_user_id": uid},
     ]
     })
@@ -1937,6 +1942,7 @@ async def reset_account_data(
     await db.notifications.delete_many({
         "$or": [
              {"user_id": uid},
+             {"actor_id": uid},
              {"actor_user_id": uid},
         ]
     })
@@ -2095,6 +2101,28 @@ async def complete_habit(habit_id: str, user: dict = Depends(get_current_user)):
 
     STREAK_MILESTONES = [7, 14, 30, 100, 365]
 
+    updated_habit = await db.habits.find_one_and_update(
+        {
+            "id": habit_id,
+            "user_id": user["id"],
+            "completions": {"$ne": today},
+        },
+        {
+            "$addToSet": {"completions": today},
+            "$set": {
+                "last_completed_date": today,
+                "streak": new_streak,
+                "longest_streak": longest,
+            },
+            "$inc": {"total_completions": 1},
+        },
+        projection={"_id": 0},
+        return_document=ReturnDocument.AFTER,
+    )
+
+    if not updated_habit:
+        raise HTTPException(status_code=400, detail="Already completed today")
+
     if new_streak in STREAK_MILESTONES:
         await create_notification(
             db=db,
@@ -2138,21 +2166,6 @@ async def complete_habit(habit_id: str, user: dict = Depends(get_current_user)):
     coins = base_coins + bonus
     xp_data = await award_user_xp(user, coins)
 
-    completions.append(today)
-
-    await db.habits.update_one(
-        {"id": habit_id},
-        {
-            "$set": {
-                "completions": completions,
-                "last_completed_date": today,
-                "streak": new_streak,
-                "longest_streak": longest,
-            },
-            "$inc": {"total_completions": 1},
-        },
-    )
-
     if xp_data["leveled_up"]:
         await create_activity(
         user["id"],
@@ -2187,17 +2200,13 @@ async def complete_habit(habit_id: str, user: dict = Depends(get_current_user)):
                 "level": xp_data["new_level"],
             },
         )
-    new_balance = user.get("coin_balance", 0) + coins
-
-    await db.users.update_one(
+    fresh_user = await db.users.find_one_and_update(
         {"id": user["id"]},
-        {
-            "$set": {
-                "coin_balance": new_balance,
-                "xp": xp_data["new_xp"],
-            }
-        },
+        {"$inc": {"coin_balance": coins, "xp": xp_data["xp_earned"]}},
+        projection={"_id": 0},
+        return_document=ReturnDocument.AFTER,
     )
+    new_balance = fresh_user["coin_balance"]
 
     desc = f"Completed habit: {habit['name']}"
     if bonus > 0:
@@ -2229,9 +2238,8 @@ async def complete_habit(habit_id: str, user: dict = Depends(get_current_user)):
     newly_earned,
     )
     new_avatars = await sync_user_avatars(db, user["id"])
-    updated = await db.habits.find_one({"id": habit_id}, {"_id": 0})
+    updated = updated_habit
     updated["completed_today"] = True
-    fresh_user = await db.users.find_one({"id": user["id"]}, {"_id": 0})
     return {
         "user": clean_user(fresh_user),
         "habit": updated,
@@ -2495,16 +2503,25 @@ async def delete_task(task_id: str, user: dict = Depends(get_current_user)):
 
 @api_router.post("/tasks/{task_id}/complete")
 async def complete_task(task_id: str, user: dict = Depends(get_current_user)):
-    task = await db.tasks.find_one(
-        {"id": task_id, "user_id": user["id"]},
-        {"_id": 0},
+    task = await db.tasks.find_one_and_update(
+        {
+            "id": task_id,
+            "user_id": user["id"],
+            "completed": {"$ne": True},
+        },
+        {"$set": {"completed": True, "completed_at": now_utc_iso()}},
+        projection={"_id": 0},
+        return_document=ReturnDocument.BEFORE,
     )
 
     if not task:
+        exists = await db.tasks.find_one(
+            {"id": task_id, "user_id": user["id"]},
+            {"_id": 0, "completed": 1},
+        )
+        if exists:
+            raise HTTPException(status_code=400, detail="Task already completed")
         raise HTTPException(status_code=404, detail="Task not found")
-
-    if task.get("completed"):
-        raise HTTPException(status_code=400, detail="Task already completed")
 
     coins = task.get("coins_reward") or coins_for(
         task.get("difficulty"),
@@ -2513,11 +2530,6 @@ async def complete_task(task_id: str, user: dict = Depends(get_current_user)):
 
     xp_data = await award_user_xp(user, coins)
 
-    await db.tasks.update_one(
-        {"id": task_id},
-        {"$set": {"completed": True, "completed_at": now_utc_iso()}},
-    )
-    
     if xp_data["leveled_up"]:
         await create_activity(
             user["id"],
@@ -2551,18 +2563,13 @@ async def complete_task(task_id: str, user: dict = Depends(get_current_user)):
                 "level": xp_data["new_level"],
             },
         )
-    new_balance = user.get("coin_balance", 0) + coins
-
-
-    await db.users.update_one(
+    fresh_user = await db.users.find_one_and_update(
         {"id": user["id"]},
-        {
-            "$set": {
-                "coin_balance": new_balance,
-                "xp": xp_data["new_xp"],
-            }
-        },
+        {"$inc": {"coin_balance": coins, "xp": xp_data["xp_earned"]}},
+        projection={"_id": 0},
+        return_document=ReturnDocument.AFTER,
     )
+    new_balance = fresh_user["coin_balance"]
 
     await log_transaction(
         user["id"],
@@ -2601,8 +2608,6 @@ async def complete_task(task_id: str, user: dict = Depends(get_current_user)):
     newly_earned,
     )
     new_avatars = await sync_user_avatars(db, user["id"])
-    fresh_user = await db.users.find_one({"id": user["id"]}, {"_id": 0})
-
     return {
         "user": clean_user(fresh_user),
         "coins_earned": coins,
@@ -2620,39 +2625,50 @@ async def complete_task(task_id: str, user: dict = Depends(get_current_user)):
 
 @api_router.post("/tasks/{task_id}/uncomplete")
 async def uncomplete_task(task_id: str, user: dict = Depends(get_current_user)):
-    task = await db.tasks.find_one(
-        {"id": task_id, "user_id": user["id"]},
-        {"_id": 0},
+    task = await db.tasks.find_one_and_update(
+        {
+            "id": task_id,
+            "user_id": user["id"],
+            "completed": True,
+        },
+        {"$set": {"completed": False, "completed_at": None}},
+        projection={"_id": 0},
+        return_document=ReturnDocument.BEFORE,
     )
 
     if not task:
+        exists = await db.tasks.find_one(
+            {"id": task_id, "user_id": user["id"]},
+            {"_id": 0},
+        )
+        if exists:
+            raise HTTPException(status_code=400, detail="Task not completed")
         raise HTTPException(status_code=404, detail="Task not found")
-
-    if not task.get("completed"):
-        raise HTTPException(status_code=400, detail="Task not completed")
 
     coins = task.get("coins_reward") or coins_for(
         task.get("difficulty"),
         task.get("custom_coins"),
     )
 
-    await db.tasks.update_one(
-        {"id": task_id},
-        {"$set": {"completed": False, "completed_at": None}},
-    )
-
-    new_balance = max(0, user.get("coin_balance", 0) - coins)
     xp_loss = coins * XP_PER_COIN
-    new_xp = max(0, int(user.get("xp", 0)) - xp_loss)
-    await db.users.update_one(
-    {"id": user["id"]},
-    {
-        "$set": {
-            "coin_balance": new_balance,
-            "xp": new_xp,
-        }
-    },
+    fresh_user = await db.users.find_one_and_update(
+        {"id": user["id"]},
+        [
+            {
+                "$set": {
+                    "coin_balance": {
+                        "$max": [0, {"$subtract": [{"$ifNull": ["$coin_balance", 0]}, coins]}]
+                    },
+                    "xp": {
+                        "$max": [0, {"$subtract": [{"$ifNull": ["$xp", 0]}, xp_loss]}]
+                    },
+                }
+            }
+        ],
+        projection={"_id": 0},
+        return_document=ReturnDocument.AFTER,
     )
+    new_balance = fresh_user["coin_balance"]
 
     await log_transaction(
         user["id"],
@@ -2786,20 +2802,25 @@ async def redeem_reward(reward_id: str, user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=404, detail="Reward not found")
 
     cost = int(reward["cost"])
-    balance = user.get("coin_balance", 0)
+    charged_user = await db.users.find_one_and_update(
+        {"id": user["id"], "coin_balance": {"$gte": cost}},
+        {"$inc": {"coin_balance": -cost}},
+        projection={"_id": 0},
+        return_document=ReturnDocument.AFTER,
+    )
 
-    if balance < cost:
+    if not charged_user:
+        current = await db.users.find_one(
+            {"id": user["id"]},
+            {"_id": 0, "coin_balance": 1},
+        )
+        balance = int((current or {}).get("coin_balance", 0))
         raise HTTPException(
             status_code=400,
             detail=f"Not enough coins. Need {cost - balance} more.",
         )
 
-    new_balance = balance - cost
-
-    await db.users.update_one(
-        {"id": user["id"]},
-        {"$set": {"coin_balance": new_balance}},
-    )
+    new_balance = charged_user["coin_balance"]
 
     await db.rewards.update_one(
         {"id": reward_id},
@@ -2989,34 +3010,31 @@ async def claim_quest(quest_id: str, user: dict = Depends(get_current_user)):
     uid = user["id"]
     period_key = get_period_key(quest["period"])
 
-    already = await db.quest_claims.find_one({
-        "user_id": uid,
-        "quest_id": quest_id,
-        "period_key": period_key,
-    })
-
-    if already:
-        raise HTTPException(status_code=400, detail="Already claimed for this period")
-
     metrics = await compute_quest_metrics(db, uid)
     progress = int(metrics.get(quest["metric"], 0))
 
     if progress < int(quest["target"]):
         raise HTTPException(status_code=400, detail="Quest not completed yet")
 
+    try:
+        await db.quest_claims.insert_one({
+            "user_id": uid,
+            "quest_id": quest_id,
+            "period_key": period_key,
+            "claimed_at": now_utc_iso(),
+        })
+    except DuplicateKeyError:
+        raise HTTPException(status_code=400, detail="Already claimed for this period")
+
     reward = int(quest["reward"])
     xp_data = await award_user_xp(user, reward)
-    new_balance = user.get("coin_balance", 0) + reward
-
-    await db.users.update_one(
+    fresh_user = await db.users.find_one_and_update(
         {"id": uid},
-        {
-            "$set": {
-                "coin_balance": new_balance,
-                "xp": xp_data["new_xp"],
-            }
-        },
+        {"$inc": {"coin_balance": reward, "xp": xp_data["xp_earned"]}},
+        projection={"_id": 0},
+        return_document=ReturnDocument.AFTER,
     )
+    new_balance = fresh_user["coin_balance"]
 
     if xp_data["leveled_up"]:
         await create_activity(
@@ -3052,13 +3070,6 @@ async def claim_quest(quest_id: str, user: dict = Depends(get_current_user)):
             "level": xp_data["new_level"],
             },
         )
-
-    await db.quest_claims.insert_one({
-        "user_id": uid,
-        "quest_id": quest_id,
-        "period_key": period_key,
-        "claimed_at": now_utc_iso(),
-    })
 
     await log_transaction(
         uid,
@@ -3215,11 +3226,13 @@ async def get_activity_feed(
 async def send_due_streak_reminders(request: Request):
     cron_secret = os.environ.get("CRON_SECRET")
 
-    if cron_secret:
-        provided = request.headers.get("X-Cron-Secret")
+    if not cron_secret:
+        raise HTTPException(status_code=503, detail="Cron endpoint is not configured")
 
-        if provided != cron_secret:
-            raise HTTPException(status_code=401, detail="Unauthorized")
+    provided = request.headers.get("X-Cron-Secret")
+
+    if not secrets.compare_digest(provided or "", cron_secret):
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
     today = today_str()
     now = datetime.now(timezone.utc)
@@ -3310,27 +3323,34 @@ async def purchase_theme(
     if theme_id in owned:
         raise HTTPException(status_code=400, detail="Theme already owned")
 
-    balance = user.get("coin_balance", 0)
     price = int(theme["price"])
 
-    if balance < price:
+    updated_user = await db.users.find_one_and_update(
+        {
+            "id": user["id"],
+            "coin_balance": {"$gte": price},
+            "owned_themes": {"$ne": theme_id},
+        },
+        {
+            "$inc": {"coin_balance": -price},
+            "$addToSet": {"owned_themes": theme_id},
+        },
+        projection={"_id": 0},
+        return_document=ReturnDocument.AFTER,
+    )
+
+    if not updated_user:
+        fresh = await db.users.find_one({"id": user["id"]}, {"_id": 0})
+        if theme_id in (fresh or {}).get("owned_themes", []):
+            raise HTTPException(status_code=400, detail="Theme already owned")
+        balance = int((fresh or {}).get("coin_balance", 0))
         raise HTTPException(
             status_code=400,
             detail=f"Not enough coins. Need {price - balance} more.",
         )
 
-    new_balance = balance - price
-    updated_owned = owned + [theme_id]
-
-    await db.users.update_one(
-        {"id": user["id"]},
-        {
-            "$set": {
-                "coin_balance": new_balance,
-                "owned_themes": updated_owned,
-            }
-        },
-    )
+    new_balance = updated_user["coin_balance"]
+    updated_owned = updated_user.get("owned_themes", [])
 
     await log_transaction(
         user["id"],
@@ -3560,6 +3580,11 @@ async def on_startup():
         {"$set": {"onboarding_completed": False}},
     )
 
+    await db.users.update_many(
+        {"token_version": {"$exists": False}},
+        {"$set": {"token_version": 0}},
+    )
+
     await db.push_tokens.create_index(
         [("user_id", 1), ("token", 1)],
         unique=True,
@@ -3584,12 +3609,17 @@ async def on_startup():
     )
     
     asyncio.create_task(cleanup_expired_password_resets())
-    admin_email = os.environ.get("ADMIN_EMAIL", "admin@example.com").lower()
-    admin_password = os.environ.get("ADMIN_PASSWORD", "admin123")
+    admin_email = os.environ.get("ADMIN_EMAIL")
+    admin_password = os.environ.get("ADMIN_PASSWORD")
 
-    existing = await db.users.find_one({"email": admin_email})
+    if admin_email and admin_password:
+        admin_email = admin_email.lower()
+        existing = await db.users.find_one({"email": admin_email})
 
-    if not existing:
+    else:
+        existing = True
+
+    if not existing and admin_email and admin_password:
         await db.users.insert_one({
             "id": str(uuid.uuid4()),
             "email": admin_email,
@@ -3607,6 +3637,7 @@ async def on_startup():
             "selected_theme": "light",
             "owned_themes": DEFAULT_THEMES.copy(),
             "created_at": now_utc_iso(),
+            "token_version": 0,
         })
 
         logger.info(f"Seeded admin user: {admin_email}")

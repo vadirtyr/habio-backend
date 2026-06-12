@@ -4,7 +4,7 @@ import uuid
 import pytest
 import requests
 
-BASE_URL = os.environ.get('REACT_APP_BACKEND_URL', 'https://habit-rewards-13.preview.emergentagent.com').rstrip('/')
+BASE_URL = os.environ.get('BACKEND_URL', 'http://127.0.0.1:8001').rstrip('/')
 API = f"{BASE_URL}/api"
 
 
@@ -40,18 +40,29 @@ def test_health(session):
 
 
 def test_admin_login(session):
-    r = session.post(f"{API}/auth/login", json={"email": "admin@example.com", "password": "admin123"})
+    admin_email = os.environ.get("ADMIN_EMAIL")
+    admin_password = os.environ.get("ADMIN_PASSWORD")
+    if not admin_email or not admin_password:
+        pytest.skip("ADMIN_EMAIL and ADMIN_PASSWORD are not configured")
+
+    r = session.post(
+        f"{API}/auth/login",
+        json={"email": admin_email, "password": admin_password},
+    )
     assert r.status_code == 200, r.text
     assert "token" in r.json()
 
 
 def test_login_invalid(session):
-    r = session.post(f"{API}/auth/login", json={"email": "admin@example.com", "password": "wrong"})
+    r = session.post(
+        f"{API}/auth/login",
+        json={"email": "missing-user@example.com", "password": "wrong"},
+    )
     assert r.status_code == 401
 
 
 def test_register_duplicate(session, new_user):
-    r = session.post(f"{API}/auth/register", json={"email": new_user["email"], "password": "x23456"})
+    r = session.post(f"{API}/auth/register", json={"email": new_user["email"], "password": "test1234"})
     assert r.status_code == 400
 
 
@@ -158,7 +169,7 @@ def test_reward_flow(auth):
     assert "redemption" in r.json()
 
     # Insufficient: raise cost massively
-    r = auth.post(f"{API}/rewards", json={"name": "TEST_big", "cost": 999999})
+    r = auth.post(f"{API}/rewards", json={"name": "TEST_big", "cost": 10000})
     big_id = r.json()["id"]
     r = auth.post(f"{API}/rewards/{big_id}/redeem")
     assert r.status_code == 400
